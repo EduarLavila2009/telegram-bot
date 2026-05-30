@@ -1,0 +1,9 @@
+python-telegram-bot>=21.0
+python-dotenv>=1.0.0
+openpyxl>=3.1.0
+Pillow>=10.0.0
+google-genai>=0.8.0
+SpeechRecognition>=3.10.0
+pydub>=0.25.1
+openai>=1.40.0
+reportlab>=4.2.0

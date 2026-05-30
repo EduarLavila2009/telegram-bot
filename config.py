@@ -1,0 +1,126 @@
+"""Carga de configuración desde variables de entorno."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+_base = Path(__file__).resolve().parent
+_ENV_PATH = _base / ".env"
+# Cargar .env junto a este paquete (funciona aunque ejecutes desde la raíz del repo).
+load_dotenv(_ENV_PATH)
+
+
+def _env_help() -> str:
+    return (
+        f"Archivo esperado: {_ENV_PATH}\n"
+        "1) Abre ese archivo y guarda los cambios (Ctrl+S).\n"
+        "2) TELEGRAM_BOT_TOKEN: copialo del mensaje de @BotFather al crear el bot "
+        "(formato: numeros, dos puntos y letras; ejemplo 123456789:ABC...).\n"
+        "3) TELEGRAM_ALLOWED_USER_ID: tu Id numerico (escribe a @userinfobot o @getidsbot).\n"
+        "4) Vuelve a ejecutar: python -m bot_financiero_telegram desde la raiz del repo, "
+        "con el venv activado o usando .\\bot_financiero_telegram\\.venv\\Scripts\\python."
+    )
+
+
+def _require_int(name: str) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        raise RuntimeError(
+            f"Falta la variable de entorno obligatoria: {name}\n{_env_help()}"
+        )
+    return int(str(raw).strip())
+
+
+def _require_str(name: str) -> str:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        raise RuntimeError(
+            f"Falta la variable de entorno obligatoria: {name}\n{_env_help()}"
+        )
+    return str(raw).strip()
+
+
+def _optional_int(name: str) -> int | None:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return None
+    return int(str(raw).strip())
+
+
+def _resolve_path_env(name: str, default_relative: str) -> Path:
+    """
+    Resuelve rutas relativas a la carpeta raíz del bot (`_base`).
+
+    - Si la variable de entorno está vacía: usa `_base / default_relative`.
+    - Si la variable tiene una ruta relativa (ej. solo el nombre del archivo):
+      se interpreta relativa a `_base`.
+    - Si la variable tiene una ruta absoluta que ya no existe en disco:
+      se intenta `_base / nombre_del_archivo` y luego el valor por defecto.
+    - Si la ruta absoluta existe: se respeta.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return (_base / default_relative).expanduser()
+    p = Path(str(raw).strip()).expanduser()
+    if not p.is_absolute():
+        return (_base / p).expanduser()
+    if p.exists():
+        return p
+    by_name = _base / p.name
+    if by_name.exists():
+        return by_name
+    fallback = (_base / default_relative).expanduser()
+    if fallback.exists():
+        return fallback
+    return p
+
+
+def _validate_bot_token(token: str) -> str:
+    token = token.strip()
+    if ":" not in token:
+        raise RuntimeError(
+            "TELEGRAM_BOT_TOKEN no tiene el formato esperado "
+            "(debe incluir ':' como en el token que envia @BotFather).\n"
+            f"{_env_help()}"
+        )
+    return token
+
+
+BOT_TOKEN: str = _validate_bot_token(_require_str("TELEGRAM_BOT_TOKEN"))
+ALLOWED_USER_ID: int = _require_int("TELEGRAM_ALLOWED_USER_ID")
+
+# Canal cuyas publicaciones (fotos) se procesan. Suele ser un id tipo -100xxxxxxxxxx.
+SOURCE_CHANNEL_ID: int | None = _optional_int("TELEGRAM_SOURCE_CHANNEL_ID")
+
+EXCEL_PATH = _resolve_path_env("EXCEL_PATH", "consolidado_financiero.xlsx")
+
+# Excel histórico para facturas de compra (si se usa).
+FACTURAS_COMPRA_PATH = _resolve_path_env(
+    "FACTURAS_COMPRA_XLSX",
+    "facturas_compra_recibidas.xlsx",
+)
+
+# Nuevo Excel oficial para facturas recibidas (compra).
+FACTURAS_RECIBIDAS_PATH = _resolve_path_env(
+    "FACTURAS_RECIBIDAS_XLSX",
+    "FACTURAS-RECIBIDAS-V3.xlsx",
+)
+
+# Carpeta base para libros mensuales de retenciones emitidas.
+RETENCIONES_EMITIDAS_DIR = _resolve_path_env(
+    "RETENCIONES_EMITIDAS_DIR",
+    ".",
+)
+
+# Imagen PNG (preferible transparente) para firma+sello en comprobantes PDF emitidos.
+FIRMA_SELLO_PATH = _resolve_path_env(
+    "FIRMA_SELLO_PATH",
+    "firma_sello_transparente.png",
+)
+
+OPENAI_API_KEY: str | None = os.environ.get("OPENAI_API_KEY") or None
+GEMINI_API_KEY: str | None = os.environ.get("GEMINI_API_KEY") or None
+GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash").strip()

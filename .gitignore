@@ -1,0 +1,6 @@
+.env
+consolidado_financiero.xlsx
+__pycache__/
+*.pyc
+.venv/
+venv/
