@@ -2863,19 +2863,20 @@ async def _send_reportes_telegram_async(
     from .tributario_engine import get_fortnight_range
     import tempfile
     
-    start_date, end_date = get_fortnight_range(year, month, fortnight)
-    
-    # 1. Generar datos y reportes quincenales
-    records = excel_store.retenciones_by_document_date(
-        config.EXCEL_PATH,
-        date_from=start_date,
-        date_to=end_date,
-    )
-    
+    logger.info("Iniciando _send_reportes_telegram_async para %d/%d Q%d", year, month, fortnight)
     temp_files: list[Path] = []
-    attachments: list[Path] = []
+    attachments: list[tuple[Path, str]] = []
     
     try:
+        start_date, end_date = get_fortnight_range(year, month, fortnight)
+        
+        # 1. Generar datos y reportes quincenales
+        records = excel_store.retenciones_by_document_date(
+            config.EXCEL_PATH,
+            date_from=start_date,
+            date_to=end_date,
+        )
+        
         month_names = {
             1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
             7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
@@ -2908,10 +2909,7 @@ async def _send_reportes_telegram_async(
             numeric_cols=[6, 7],
             sum_cols=[6, 7]
         )
-        prof_xls = xls_path.with_name(f"RETENCIONES-RECIBIDAS-Q{fortnight}-{month}-{year}.xlsx")
-        xls_path.rename(prof_xls)
-        attachments.append(prof_xls)
-        temp_files.append(prof_xls)
+        attachments.append((xls_path, f"RETENCIONES-RECIBIDAS-Q{fortnight}-{month}-{year}.xlsx"))
         
         # 2. Excel de Facturas Recibidas / Compras con Retención Emitida
         purchases_rows = excel_store.load_purchases_by_date_range(
@@ -2931,10 +2929,7 @@ async def _send_reportes_telegram_async(
             numeric_cols=[7, 8, 9, 10],
             sum_cols=[7, 8, 9, 10]
         )
-        prof_purchases_xls = purchases_xls_path.with_name(f"FACTURAS-RECIBIDAS-Q{fortnight}-{month}-{year}.xlsx")
-        purchases_xls_path.rename(prof_purchases_xls)
-        attachments.append(prof_purchases_xls)
-        temp_files.append(prof_purchases_xls)
+        attachments.append((purchases_xls_path, f"FACTURAS-RECIBIDAS-Q{fortnight}-{month}-{year}.xlsx"))
 
         # 3. Excel de Facturas Emitidas / Ventas
         sales_rows = excel_store.load_sales_by_date_range(
@@ -2954,10 +2949,7 @@ async def _send_reportes_telegram_async(
             numeric_cols=[5, 6, 7],
             sum_cols=[5, 6, 7]
         )
-        prof_sales_xls = sales_xls_path.with_name(f"FACTURAS-EMITIDAS-Q{fortnight}-{month}-{year}.xlsx")
-        sales_xls_path.rename(prof_sales_xls)
-        attachments.append(prof_sales_xls)
-        temp_files.append(prof_sales_xls)
+        attachments.append((sales_xls_path, f"FACTURAS-EMITIDAS-Q{fortnight}-{month}-{year}.xlsx"))
 
         # 4. Excel de Reportes Z / Ventas Diarias
         z_rows = excel_store.load_reportes_z_by_date_range(
@@ -2977,19 +2969,17 @@ async def _send_reportes_telegram_async(
             numeric_cols=[3, 4, 5, 6, 7],
             sum_cols=[3, 4, 5, 6, 7]
         )
-        prof_z_xls = z_xls_path.with_name(f"REPORTES-Z-Q{fortnight}-{month}-{year}.xlsx")
-        z_xls_path.rename(prof_z_xls)
-        attachments.append(prof_z_xls)
-        temp_files.append(prof_z_xls)
+        attachments.append((z_xls_path, f"REPORTES-Z-Q{fortnight}-{month}-{year}.xlsx"))
             
         # 5. Enviar cada archivo por Telegram
-        for path in attachments:
+        for path, filename in attachments:
+            logger.info("Enviando documento %s a Telegram...", filename)
             with open(path, "rb") as f:
                 await context.bot.send_document(
                     chat_id=config.ALLOWED_USER_ID,
                     document=f,
-                    filename=path.name,
-                    caption=f"📊 Reporte: {path.name}"
+                    filename=filename,
+                    caption=f"📊 Reporte: {filename}"
                 )
                 
         # Actualizar estado en Telegram
@@ -2998,13 +2988,15 @@ async def _send_reportes_telegram_async(
             f"Se enviaron los 4 archivos Excel de la *Quincena {fortnight}* del mes *{month}/{year}* directamente a este chat.",
             parse_mode="Markdown"
         )
+        logger.info("Reportes generados y enviados con éxito.")
     except Exception as e:
         logger.exception("Error al generar y enviar reportes por Telegram")
-        await status_msg.edit_text(
-            f"❌ *Error al generar los reportes*\n\n"
-            f"• *Detalle del error:* `{e!s}`",
-            parse_mode="Markdown"
-        )
+        try:
+            await status_msg.edit_text(
+                f"❌ Error al generar los reportes:\n\n{e!s}"
+            )
+        except Exception as edit_err:
+            logger.error("No se pudo editar el mensaje de error: %s", edit_err)
     finally:
         # Eliminar archivos temporales creados para evitar fugas de espacio en disco
         for path in temp_files:
@@ -3012,6 +3004,8 @@ async def _send_reportes_telegram_async(
                 path.unlink(missing_ok=True)
             except Exception:
                 pass
+
+
 
 
 def _generate_short_summary(report: dict[str, object]) -> str:
