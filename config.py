@@ -106,7 +106,7 @@ FACTURAS_COMPRA_PATH = _resolve_path_env(
 # Nuevo Excel oficial para facturas recibidas (compra).
 FACTURAS_RECIBIDAS_PATH = _resolve_path_env(
     "FACTURAS_RECIBIDAS_XLSX",
-    "FACTURAS-RECIBIDAS-V3.xlsx",
+    "FACTURAS-RECIBIDAS-NUEVO.xlsx",
 )
 
 # Excel oficial para facturas de venta / emitidas.
@@ -124,7 +124,7 @@ REPORTES_Z_PATH = _resolve_path_env(
 # Carpeta base para libros mensuales de retenciones emitidas.
 RETENCIONES_EMITIDAS_DIR = _resolve_path_env(
     "RETENCIONES_EMITIDAS_DIR",
-    ".",
+    "RETENCIONES-EMITIDAS-NUEVO",
 )
 
 # Imagen PNG (preferible transparente) para firma+sello en comprobantes PDF emitidos.
