@@ -201,11 +201,26 @@ def append_factura_compra(
     monto_iva: str,
     total: str,
     texto_resumen: str = "",
-) -> None:
+) -> bool:
     ensure_factura_compra_workbook(path)
     wb = load_workbook(path)
     ws = wb.active
     headers = _headers_index(ws)
+    
+    # Verificar duplicidad por Proveedor_RIF + Numero_documento
+    num_doc_clean = str(numero_documento).strip()
+    rif_clean = str(proveedor_rif).strip().upper()
+    if num_doc_clean and num_doc_clean != "-" and num_doc_clean.lower() != "s/n" and rif_clean:
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if not row:
+                continue
+            existing_num = _cell(row, headers, "Numero_documento", None)
+            existing_rif = _cell(row, headers, "Proveedor_RIF", None)
+            if (existing_num is not None and str(existing_num).strip() == num_doc_clean and
+                existing_rif is not None and str(existing_rif).strip().upper() == rif_clean):
+                wb.close()
+                return False
+
     resolved: set[str] = set()
     for cell_title in headers:
         cn = str(cell_title or "").strip()
@@ -267,6 +282,7 @@ def append_factura_compra(
     ws.append(row_out)
     wb.save(path)
     wb.close()
+    return True
 
 
 def ensure_workbook(path: Path) -> None:
@@ -394,6 +410,8 @@ def _parse_monto_cell(value: str | int | float | None) -> Decimal | None:
     s = str(value).strip()
     if not s:
         return None
+    # Clean currency prefixes like Bs., Bs, bs., bsf, ves, $, etc.
+    s = re.sub(r'(?i)^(bsf\.?|bs\.?|ves\.?|usd\.?|\$)\s*', '', s)
     s = s.replace(" ", "")
     if re.search(r"\d+\.\d{3},\d{2}$", s) or (
         "," in s and "." in s and s.rfind(",") > s.rfind(".")
@@ -406,6 +424,7 @@ def _parse_monto_cell(value: str | int | float | None) -> Decimal | None:
         return Decimal(s)
     except InvalidOperation:
         return None
+
 
 
 def parse_amount_ves_string(value: str | None) -> Decimal | None:
@@ -791,6 +810,136 @@ def max_seq_retencion_emitida(base_dir: Path, *, emission_date: date) -> int:
     monthly = monthly_retencion_emitida_path(base_dir, emission_date)
     max_seq = max(max_seq, _max_seq_retencion_emitida_in_workbook(monthly, prefix=prefix))
     return max_seq
+
+
+def ensure_ventas_workbook(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        return
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Documentos"
+    ws.append([
+        "Clasificacion", "Estado", "Fecha", "Numero_documento", "Razon_social", 
+        "RIF", "Base_imponible", "IVA", "Total", "Monto_retenido", "Dato_fiscal", 
+        "Emisor", "Sujeto_retenido", "Texto_origen", "Fecha_registro", "Motivo_clasificacion"
+    ])
+    wb.save(path)
+
+
+def append_venta_record(
+    path: Path,
+    *,
+    clasificacion: str,
+    estado: str,
+    fecha: str,
+    numero_documento: str,
+    razon_social: str,
+    rif: str,
+    base_imponible: str,
+    iva: str,
+    total: str,
+    monto_retenido: str = "",
+    dato_fiscal: str = "",
+    emisor: str = "SUMINISTROS FERRETEROS VITTORIA (SUFEVICA), C.A.",
+    sujeto_retenido: str = "",
+    texto_origen: str = "",
+    motivo_clasificacion: str = "",
+) -> bool:
+    ensure_ventas_workbook(path)
+    wb = load_workbook(path)
+    ws = wb.active
+    headers = _headers_index(ws)
+    
+    # Verificar duplicados por Numero_documento
+    num_doc_clean = str(numero_documento).strip()
+    if num_doc_clean and num_doc_clean != "-" and num_doc_clean.lower() != "s/n":
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if not row:
+                continue
+            existing_num = _cell(row, headers, "Numero_documento", None)
+            if existing_num is not None and str(existing_num).strip() == num_doc_clean:
+                wb.close()
+                return False
+                
+    ws.append([
+        clasificacion,
+        estado,
+        fecha,
+        numero_documento,
+        razon_social,
+        rif,
+        _excel_numeric_cell(base_imponible),
+        _excel_numeric_cell(iva),
+        _excel_numeric_cell(total),
+        _excel_numeric_cell(monto_retenido),
+        dato_fiscal,
+        emisor,
+        sujeto_retenido,
+        (texto_origen or "")[:500],
+        datetime.now().isoformat(timespec="seconds"),
+        motivo_clasificacion,
+    ])
+    wb.save(path)
+    wb.close()
+    return True
+
+
+def ensure_reporte_z_nuevo_workbook(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        return
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Reportes Z"
+    ws.append([
+        "Numero_reporte", "Fecha_emision", "Sub_total", "Base_imponible", 
+        "Monto_exento", "IVA", "Total", "Texto_origen", "Fecha_registro"
+    ])
+    wb.save(path)
+
+
+def append_reporte_z_nuevo(
+    path: Path,
+    *,
+    numero_reporte: str,
+    fecha_emision: str,
+    sub_total: str,
+    base_imponible: str,
+    monto_exento: str,
+    iva: str,
+    total: str,
+    texto_origen: str = "",
+) -> bool:
+    ensure_reporte_z_nuevo_workbook(path)
+    wb = load_workbook(path)
+    ws = wb.active
+    headers = _headers_index(ws)
+    
+    # Verificar duplicados por Numero_reporte
+    num_rep_clean = str(numero_reporte).strip()
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if not row:
+            continue
+        existing_num = _cell(row, headers, "Numero_reporte", None)
+        if existing_num is not None and str(existing_num).strip() == num_rep_clean:
+            wb.close()
+            return False
+            
+    ws.append([
+        numero_reporte,
+        fecha_emision,
+        _excel_numeric_cell(sub_total),
+        _excel_numeric_cell(base_imponible),
+        _excel_numeric_cell(monto_exento),
+        _excel_numeric_cell(iva),
+        _excel_numeric_cell(total),
+        (texto_origen or "")[:500],
+        datetime.now().isoformat(timespec="seconds"),
+    ])
+    wb.save(path)
+    wb.close()
+    return True
 
 
 def ensure_retencion_emitida_workbook(path: Path) -> None:
@@ -1198,3 +1347,385 @@ def export_comprobante_emitido_pdf(
     )
     c.save()
     return out_path
+
+
+def _to_float_or_none(val: object) -> float | None:
+    if val is None:
+        return None
+    try:
+        if isinstance(val, (int, float)):
+            return float(val)
+        d = _parse_monto_cell(str(val))
+        return float(d) if d is not None else None
+    except Exception:
+        return None
+
+
+def h_lower_contains_date_or_num(header: str, val: object) -> bool:
+    h = str(header).lower()
+    if any(x in h for x in ("fecha", "nro", "numero", "control", "rif", "correlativo", "tipo", "documento", "comprobante")):
+        return True
+    s = str(val or "").strip()
+    if re.fullmatch(r"\d{2}/\d{2}/\d{4}", s) or re.fullmatch(r"\d+", s):
+        return True
+    return False
+
+
+def generate_premium_report_excel(
+    out_path: Path,
+    title: str,
+    period_str: str,
+    headers: list[str],
+    rows: list[list[object]],
+    numeric_cols: list[int],
+    sum_cols: list[int],
+) -> Path:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Resumen"
+    ws.views.sheetView[0].showGridLines = True
+
+    # Font definitions
+    font_family = "Segoe UI"
+    font_title = Font(name=font_family, size=14, bold=True, color="1A1A1A")
+    font_subtitle = Font(name=font_family, size=10, italic=True, color="555555")
+    font_meta_key = Font(name=font_family, size=9, bold=True, color="333333")
+    font_meta_val = Font(name=font_family, size=9, color="333333")
+    font_header = Font(name=font_family, size=9, bold=True, color="FFFFFF")
+    font_data = Font(name=font_family, size=9, color="333333")
+    font_totals = Font(name=font_family, size=9, bold=True, color="1A1A1A")
+
+    # Border definitions
+    thin_border_side = Side(style="thin", color="CCCCCC")
+    border_all_thin = Border(left=thin_border_side, right=thin_border_side, top=thin_border_side, bottom=thin_border_side)
+    
+    double_bottom = Side(style="double", color="333333")
+    thin_top = Side(style="thin", color="333333")
+    border_totals = Border(top=thin_top, bottom=double_bottom)
+
+    # Rellenos
+    fill_header = PatternFill(start_color="3B4F66", end_color="3B4F66", fill_type="solid")
+    fill_meta = PatternFill(start_color="F8F9FA", end_color="F8F9FA", fill_type="solid")
+    fill_zebra = PatternFill(start_color="F2F4F7", end_color="F2F4F7", fill_type="solid")
+
+    # Title
+    ws.cell(row=2, column=2, value=title).font = font_title
+    ws.cell(row=3, column=2, value=f"Período: {period_str}").font = font_subtitle
+
+    # Metadata Box (Rows 5 to 10)
+    meta_info = [
+        ("Agente de retención:", "Suministros Ferreteros Vittoria, C.A.(SUFEVICA)"),
+        ("RIF:", "J-40194130-3"),
+        ("Periodo:", period_str),
+        ("Teléfono:", "+582812768765"),
+        ("Dirección:", "AV JUAN DE URPIN CC RESIDENCIAS VITTORIA III, EDIF.F NIVEL PB LOCAL NRO. 2 SECTOR EL ESPEJO BARCELONA ANZOATEGUI ZONA POSTAL 6001"),
+        ("Facturas listadas:", len(rows)),
+    ]
+
+    max_col_idx = len(headers) + 1
+    end_col = max(7, max_col_idx)
+    
+    for r_offset, (k, v) in enumerate(meta_info):
+        r = 5 + r_offset
+        cell_k = ws.cell(row=r, column=2, value=k)
+        cell_k.font = font_meta_key
+        cell_k.alignment = Alignment(horizontal="right", vertical="center")
+        
+        ws.merge_cells(start_row=r, start_column=3, end_row=r, end_column=end_col)
+        cell_v = ws.cell(row=r, column=3, value=v)
+        cell_v.font = font_meta_val
+        cell_v.alignment = Alignment(horizontal="left", vertical="center")
+
+        for c in range(2, end_col + 1):
+            cell = ws.cell(row=r, column=c)
+            cell.fill = fill_meta
+            
+            left_side = Side(style="thin", color="BBBBBB") if c == 2 else None
+            right_side = Side(style="thin", color="BBBBBB") if c == end_col else None
+            top_side = Side(style="thin", color="BBBBBB") if r == 5 else None
+            bottom_side = Side(style="thin", color="BBBBBB") if r == 10 else None
+            cell.border = Border(left=left_side, right=right_side, top=top_side, bottom=bottom_side)
+
+    # Table Header Row (Row 12)
+    start_row = 12
+    for c_idx, h in enumerate(headers):
+        col = 2 + c_idx
+        cell = ws.cell(row=start_row, column=col, value=h)
+        cell.font = font_header
+        cell.fill = fill_header
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border_all_thin
+
+    ws.row_dimensions[start_row].height = 24
+
+    # Data Rows (Row 13 onwards)
+    current_row = start_row + 1
+    for r_idx, r_data in enumerate(rows):
+        is_even = (r_idx % 2 == 1)
+        for c_idx, val in enumerate(r_data):
+            col = 2 + c_idx
+            cell = ws.cell(row=current_row, column=col)
+            
+            if c_idx in numeric_cols:
+                n_val = _to_float_or_none(val)
+                if n_val is not None:
+                    cell.value = n_val
+                    cell.number_format = '#,##0.00'
+                else:
+                    cell.value = val
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+            else:
+                cell.value = val
+                if c_idx == 0 or h_lower_contains_date_or_num(headers[c_idx], val):
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                else:
+                    cell.alignment = Alignment(horizontal="left", vertical="center")
+
+            cell.font = font_data
+            cell.border = border_all_thin
+            if is_even:
+                cell.fill = fill_zebra
+                
+        ws.row_dimensions[current_row].height = 18
+        current_row += 1
+
+    # Totals Row
+    first_sum_col = min(sum_cols) if sum_cols else 1000
+    totales_col = first_sum_col + 2 - 1
+    if totales_col >= 2:
+        cell_t = ws.cell(row=current_row, column=totales_col, value="TOTALES")
+        cell_t.font = font_totals
+        cell_t.alignment = Alignment(horizontal="right", vertical="center")
+        cell_t.border = border_totals
+
+    for c_idx in range(len(headers)):
+        col = 2 + c_idx
+        cell = ws.cell(row=current_row, column=col)
+        if c_idx in sum_cols:
+            col_letter = get_column_letter(col)
+            formula = f"=SUM({col_letter}13:{col_letter}{current_row - 1})"
+            cell.value = formula
+            cell.number_format = '#,##0.00'
+            cell.font = font_totals
+            cell.alignment = Alignment(horizontal="right", vertical="center")
+            cell.border = border_totals
+        else:
+            cell.border = border_totals
+
+    ws.row_dimensions[current_row].height = 20
+
+    # Auto-adjust column widths
+    for col in range(2, 2 + len(headers)):
+        col_letter = get_column_letter(col)
+        max_len = 0
+        for r in range(start_row, current_row + 1):
+            cell_val = ws.cell(row=r, column=col).value
+            if cell_val is not None:
+                s_val = str(cell_val)
+                if s_val.startswith("="):
+                    s_val = "123.456,78"
+                max_len = max(max_len, len(s_val))
+        ws.column_dimensions[col_letter].width = max(max_len + 3, 10)
+
+    ws.column_dimensions["A"].width = 3
+
+    wb.save(out_path)
+    wb.close()
+    return out_path
+
+
+def load_purchases_by_date_range(
+    base_dir: Path,
+    *,
+    date_from: date,
+    date_to: date,
+) -> list[list[object]]:
+    if not base_dir.is_dir():
+        return []
+    records: list[tuple[date, str, str, str, str, str, float, float, float, float]] = []
+    
+    for path in base_dir.glob("RETEN-EMIT-*.xlsx"):
+        try:
+            wb = load_workbook(path, read_only=True, data_only=True)
+            ws = wb.active
+            headers = _headers_index(ws)
+            
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not row:
+                    continue
+                f_cell = _cell(row, headers, "Fecha_emision", None)
+                f_doc = _parse_fecha_cell(f_cell)
+                if f_doc is None or f_doc < date_from or f_doc > date_to:
+                    continue
+                
+                num_comp = str(_cell(row, headers, "Numero_comprobante", "") or "").strip()
+                prov = str(_cell(row, headers, "Proveedor", "") or "").strip()
+                rif = str(_cell(row, headers, "Proveedor_RIF", "") or "").strip()
+                doc = str(_cell(row, headers, "Documentos", "") or "").strip()
+                ctrl = str(_cell(row, headers, "Controles", "") or "").strip()
+                
+                base = _parse_monto_cell(_cell(row, headers, "Base_imponible_total", None)) or Decimal("0")
+                iva = _parse_monto_cell(_cell(row, headers, "IVA_total", None)) or Decimal("0")
+                ret = _parse_monto_cell(_cell(row, headers, "IVA_retenido_total", None)) or Decimal("0")
+                monto = base + iva
+                
+                records.append((
+                    f_doc,
+                    num_comp,
+                    prov,
+                    rif,
+                    doc,
+                    ctrl,
+                    float(base),
+                    float(iva),
+                    float(monto),
+                    float(ret)
+                ))
+            wb.close()
+        except Exception as e:
+            logger.exception("Error loading purchases from %s: %s", path, e)
+            
+    records.sort(key=lambda x: (x[0], x[1], x[3]))
+    
+    out: list[list[object]] = []
+    for idx, r in enumerate(records):
+        out.append([
+            idx + 1,
+            r[0].strftime("%d/%m/%Y"),
+            r[1],
+            r[2],
+            r[3],
+            r[4],
+            r[5],
+            r[6],
+            r[7],
+            r[8],
+            r[9]
+        ])
+    return out
+
+
+def load_sales_by_date_range(
+    path: Path,
+    *,
+    date_from: date,
+    date_to: date,
+) -> list[list[object]]:
+    if not path.exists():
+        return []
+    records: list[tuple[date, str, str, str, float, float, float]] = []
+    
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        ws = wb.active
+        headers = _headers_index(ws)
+        
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if not row:
+                continue
+            f_cell = _cell(row, headers, "Fecha", None) or _cell(row, headers, "Fecha_emision", None)
+            f_doc = _parse_fecha_cell(f_cell)
+            if f_doc is None or f_doc < date_from or f_doc > date_to:
+                continue
+            
+            num_doc = str(_cell(row, headers, "Numero_documento", "") or "").strip()
+            cliente = str(_cell(row, headers, "Razon_social", "") or "").strip()
+            rif = str(_cell(row, headers, "RIF", "") or "").strip()
+            
+            base = _parse_monto_cell(_cell(row, headers, "Base_imponible", None)) or Decimal("0")
+            iva = _parse_monto_cell(_cell(row, headers, "IVA", None)) or Decimal("0")
+            total = _parse_monto_cell(_cell(row, headers, "Total", None)) or (base + iva)
+            
+            records.append((
+                f_doc,
+                num_doc,
+                cliente,
+                rif,
+                float(base),
+                float(iva),
+                float(total)
+            ))
+        wb.close()
+    except Exception as e:
+        logger.exception("Error loading sales from %s: %s", path, e)
+        
+    records.sort(key=lambda x: (x[0], x[1]))
+    
+    out: list[list[object]] = []
+    for idx, r in enumerate(records):
+        out.append([
+            idx + 1,
+            r[0].strftime("%d/%m/%Y"),
+            r[1],
+            r[2],
+            r[3],
+            r[4],
+            r[5],
+            r[6]
+        ])
+    return out
+
+
+def load_reportes_z_by_date_range(
+    path: Path,
+    *,
+    date_from: date,
+    date_to: date,
+) -> list[list[object]]:
+    if not path.exists():
+        return []
+    records: list[tuple[date, str, float, float, float, float, float]] = []
+    
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        ws = wb.active
+        headers = _headers_index(ws)
+        
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if not row:
+                continue
+            f_cell = _cell(row, headers, "Fecha_emision", None) or _cell(row, headers, "Fecha", None)
+            f_doc = _parse_fecha_cell(f_cell)
+            if f_doc is None or f_doc < date_from or f_doc > date_to:
+                continue
+            
+            num_rep = str(_cell(row, headers, "Numero_reporte", "") or "").strip()
+            
+            sub = _parse_monto_cell(_cell(row, headers, "Sub_total", None)) or Decimal("0")
+            exento = _parse_monto_cell(_cell(row, headers, "Monto_exento", None)) or Decimal("0")
+            base = _parse_monto_cell(_cell(row, headers, "Base_imponible", None)) or Decimal("0")
+            iva = _parse_monto_cell(_cell(row, headers, "IVA", None)) or Decimal("0")
+            total = _parse_monto_cell(_cell(row, headers, "Total", None)) or Decimal("0")
+            
+            records.append((
+                f_doc,
+                num_rep,
+                float(sub),
+                float(exento),
+                float(base),
+                float(iva),
+                float(total)
+            ))
+        wb.close()
+    except Exception as e:
+        logger.exception("Error loading Reportes Z from %s: %s", path, e)
+        
+    records.sort(key=lambda x: (x[0], x[1]))
+    
+    out: list[list[object]] = []
+    for idx, r in enumerate(records):
+        out.append([
+            idx + 1,
+            r[0].strftime("%d/%m/%Y"),
+            r[1],
+            r[2],
+            r[3],
+            r[4],
+            r[5],
+            r[6]
+        ])
+    return out

@@ -4,3 +4,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+bot.log
+scratch/
+*.xlsx.bak
+modulo_cotizaciones/generados/

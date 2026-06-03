@@ -95,7 +95,7 @@ ALLOWED_USER_ID: int = _require_int("TELEGRAM_ALLOWED_USER_ID")
 # Canal cuyas publicaciones (fotos) se procesan. Suele ser un id tipo -100xxxxxxxxxx.
 SOURCE_CHANNEL_ID: int | None = _optional_int("TELEGRAM_SOURCE_CHANNEL_ID")
 
-EXCEL_PATH = _resolve_path_env("EXCEL_PATH", "consolidado_financiero.xlsx")
+EXCEL_PATH = _resolve_path_env("EXCEL_PATH", "RETEN-REC.xlsx")
 
 # Excel histórico para facturas de compra (si se usa).
 FACTURAS_COMPRA_PATH = _resolve_path_env(
@@ -107,6 +107,18 @@ FACTURAS_COMPRA_PATH = _resolve_path_env(
 FACTURAS_RECIBIDAS_PATH = _resolve_path_env(
     "FACTURAS_RECIBIDAS_XLSX",
     "FACTURAS-RECIBIDAS-V3.xlsx",
+)
+
+# Excel oficial para facturas de venta / emitidas.
+FACTURAS_EMITIDAS_PATH = _resolve_path_env(
+    "FACTURAS_EMITIDAS_XLSX",
+    "FACTURAS-EMITIDAS.xlsx",
+)
+
+# Excel oficial para reportes Z de ventas.
+REPORTES_Z_PATH = _resolve_path_env(
+    "REPORTES_Z_XLSX",
+    "REPORTES-Z-NUEVO.xlsx",
 )
 
 # Carpeta base para libros mensuales de retenciones emitidas.
@@ -124,3 +136,15 @@ FIRMA_SELLO_PATH = _resolve_path_env(
 OPENAI_API_KEY: str | None = os.environ.get("OPENAI_API_KEY") or None
 GEMINI_API_KEY: str | None = os.environ.get("GEMINI_API_KEY") or None
 GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash").strip()
+
+SMTP_SERVER: str | None = os.environ.get("SMTP_SERVER") or None
+SMTP_PORT: int = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER: str | None = os.environ.get("SMTP_USER") or None
+SMTP_PASSWORD: str | None = os.environ.get("SMTP_PASSWORD") or None
+DEFAULT_ACCOUNTANT_EMAIL: str | None = os.environ.get("DEFAULT_ACCOUNTANT_EMAIL") or None
+
+# Variables para despliegue en la nube (Render)
+PORT: int = int(os.environ.get("PORT", "8000"))
+RENDER_EXTERNAL_URL: str | None = os.environ.get("RENDER_EXTERNAL_URL") or None
+
+

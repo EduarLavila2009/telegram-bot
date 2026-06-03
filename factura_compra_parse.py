@@ -119,6 +119,9 @@ def _extract_razon_before_rif(seg: str) -> str:
 
 def looks_like_factura_compra(text: str) -> bool:
     t = _norm(text)
+    # Exclusión explícita de comprobantes de retención para evitar que se clasifiquen como compras
+    if any(k in t for k in ("comprobante de retencion", "numero de comprobante", "iva retenido", "impuesto retenido")):
+        return False
     if "factura recibida" in t:
         return True
     if "factura de compra" in t:

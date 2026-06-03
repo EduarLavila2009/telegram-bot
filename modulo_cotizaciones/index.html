@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SUFEVICA - Módulo de Cotizaciones y Notas de Entrega</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Segoe+UI:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Panel de Control Izquierdo (Oculto en Impresión) -->
+        <aside class="control-panel">
+            <header class="panel-header">
+                <div class="header-logo-container">
+                    <svg class="header-logo-svg" viewBox="0 0 100 100" width="40" height="40">
+                        <rect x="25" y="25" width="50" height="50" rx="6" transform="rotate(45 50 50)" fill="#4A6fa5"/>
+                        <path d="M50 35 L50 65 M35 50 L65 50" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+                        <circle cx="50" cy="50" r="10" fill="none" stroke="#ffffff" stroke-width="3"/>
+                    </svg>
+                    <h1>SUFEVICA</h1>
+                </div>
+                <p>Gestor de Documentos de Clientes</p>
+            </header>
+
+            <div class="panel-section">
+                <h2>1. Tipo de Documento</h2>
+                <div class="btn-group toggle-group" id="docTypeToggle">
+                    <button class="btn toggle-btn active" data-type="cotizacion">Cotización</button>
+                    <button class="btn toggle-btn" data-type="nota">Nota de Entrega</button>
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <h2>2. Moneda del Documento</h2>
+                <div class="currency-toggle-wrapper">
+                    <div class="btn-group toggle-group" id="currencyToggle">
+                        <button class="btn toggle-btn active" data-currency="usd">Dólares ($)</button>
+                        <button class="btn toggle-btn" data-currency="ves">Bolívares (Bs.)</button>
+                    </div>
+                    <div class="exchange-rate-container" id="rateContainer">
+                        <label for="exchangeRate">Tasa de Cambio (Bs./$):</label>
+                        <input type="number" id="exchangeRate" value="550.00" step="0.01" min="1">
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <h2>3. Datos del Documento</h2>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="docNumber">Nro. Documento:</label>
+                        <input type="text" id="docNumber" value="001001" placeholder="Ej: 001403">
+                    </div>
+                    <div class="form-group">
+                        <label for="docDate">Fecha Emisión:</label>
+                        <input type="date" id="docDate">
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <h2>4. Datos del Cliente</h2>
+                <div class="form-group">
+                    <label for="clientName">Nombre / Razón Social:</label>
+                    <input type="text" id="clientName" placeholder="Nombre del cliente o empresa">
+                </div>
+                <div class="form-group">
+                    <label for="clientAddress">Dirección Fiscal:</label>
+                    <input type="text" id="clientAddress" placeholder="Dirección del cliente">
+                </div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="clientRif">RIF / C.I.:</label>
+                        <input type="text" id="clientRif" placeholder="J-12345678-9 o V-12345678">
+                    </div>
+                    <div class="form-group">
+                        <label for="clientPhone">Teléfonos:</label>
+                        <input type="text" id="clientPhone" placeholder="Ej: 0414-1900669">
+                    </div>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="salesman">Vendedor:</label>
+                        <input type="text" id="salesman" value="FREDDY LOPEZ" placeholder="Nombre vendedor">
+                    </div>
+                    <div class="form-group">
+                        <label for="saleType">Tipo Venta:</label>
+                        <select id="saleType">
+                            <option value="Contado" selected>Contado</option>
+                            <option value="Crédito">Crédito</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group" style="margin-top: 8px;">
+                    <label for="clientNote">Nota:</label>
+                    <input type="text" id="clientNote" placeholder="Nota adicional (dejar vacío para usar por defecto)">
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <h2>5. Agregar Productos / Servicios</h2>
+                <form id="itemForm" onsubmit="event.preventDefault();">
+                    <div class="form-grid">
+                        <div class="form-group span-2">
+                            <label for="itemCode">Código:</label>
+                            <input type="text" id="itemCode" placeholder="Ej: PARP-220">
+                        </div>
+                        <div class="form-group span-10">
+                            <label for="itemDesc">Descripción:</label>
+                            <input type="text" id="itemDesc" placeholder="Descripción del producto">
+                        </div>
+                    </div>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="itemQty">Cantidad:</label>
+                            <input type="number" id="itemQty" value="1" min="1" step="any">
+                        </div>
+                        <div class="form-group">
+                            <label for="itemPrice">Precio unitario ($):</label>
+                            <input type="number" id="itemPrice" value="0.00" min="0" step="0.01">
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" id="addItemBtn">Añadir a la lista</button>
+                </form>
+            </div>
+
+            <div class="panel-actions">
+                <button class="btn btn-danger" id="clearBtn">Limpiar Todo</button>
+                <button class="btn btn-info" id="draftBtn">Guardar Borrador</button>
+                <button class="btn btn-success" id="printBtn">Imprimir / PDF 🖨️</button>
+            </div>
+        </aside>
+
+        <!-- Vista Previa Imprimible Derecha -->
+        <main class="preview-area">
+            <div class="printable-sheet" id="printableSheet">
+                <!-- CABECERA SUFEVICA FIJA (Idéntica al formato) -->
+                <header class="sheet-header">
+                    <div class="header-left">
+                        <div class="logo-box-img" style="display: flex; align-items: center; gap: 8px;">
+                            <img src="logo_icono.jpg" alt="SUFEVICA Icono" style="height: 38px; width: auto; display: block;">
+                            <img src="logo_texto.jpg" alt="SUFEVICA Texto" style="height: 25px; width: auto; display: block; margin-top: 2px;">
+                        </div>
+                    </div>
+                    <div class="header-right">
+                        <p class="header-address">Av. Juan de Urpín, C.C. Residencias Vittoria III, Edificio F, Nivel P.B.</p>
+                        <p class="header-address">Local Nº 2 - Sector El Espejo - Barcelona - Estado Anzoátegui</p>
+                        <p class="header-phone">Telfs.: 0281-276.87.65 - 0414-817.88.77</p>
+                        <p class="header-email">Correo: sufevica@gmail.com</p>
+                        <span class="sheet-form-label">FORMA LIBRE</span>
+                    </div>
+                </header>
+
+                <!-- CAJA DE INFORMACIÓN DEL CLIENTE (Idéntico al formato Allprot) -->
+                <section class="client-info-box-fl">
+                    <!-- Lado Izquierdo: Rejilla de Datos del Cliente -->
+                    <div class="client-left-side">
+                        <div class="info-row-fl">
+                            <div class="info-col-fl span-6">
+                                <span class="field-label-fl">Cliente</span>
+                                <span class="field-value-fl" id="viewClientName">—</span>
+                            </div>
+                            <div class="info-col-fl span-6">
+                                <span class="field-label-fl">Vendedor</span>
+                                <span class="field-value-fl" id="viewSalesman">FREDDY LOPEZ</span>
+                            </div>
+                        </div>
+                        <div class="info-row-fl">
+                            <div class="info-col-fl span-12">
+                                <span class="field-label-fl">Dirección</span>
+                                <span class="field-value-fl" id="viewClientAddress">—</span>
+                            </div>
+                        </div>
+                        <div class="info-row-fl">
+                            <div class="info-col-fl span-4">
+                                <span class="field-label-fl">R.I.F/C.I</span>
+                                <span class="field-value-fl" id="viewClientRif">—</span>
+                            </div>
+                            <div class="info-col-fl span-4">
+                                <span class="field-label-fl">Telefonos</span>
+                                <span class="field-value-fl" id="viewClientPhone">—</span>
+                            </div>
+                            <div class="info-col-fl span-4">
+                                <span class="field-label-fl">Tipo Venta</span>
+                                <span class="field-value-fl" id="viewSaleType">Contado</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Lado Derecho: Bloque Metadatos del Documento -->
+                    <div class="doc-right-side">
+                        <div class="doc-meta-row header-doc-title">
+                            <span class="doc-type-label-fl" id="viewDocTypeTitle">COTIZACIÓN</span>
+                        </div>
+                        <div class="doc-meta-row header-doc-number">
+                            <span class="doc-num-label-fl" id="viewDocNumber">Nº 001001</span>
+                        </div>
+                        <div class="doc-meta-row header-doc-date">
+                            <span class="field-label-fl">FECHA</span>
+                            <span class="field-value-fl" id="viewDocDate">—</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- TABLA DE ARTÍCULOS -->
+                <section class="items-table-section">
+                    <table class="items-table">
+                        <thead>
+                            <tr>
+                                <th class="col-code">Código</th>
+                                <th class="col-desc">Descripción</th>
+                                <th class="col-qty">Cantidad</th>
+                                <th class="col-price" id="colPriceHeader">Precio ($)</th>
+                                <th class="col-total" id="colTotalHeader">Total ($)</th>
+                                <th class="col-actions no-print"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="itemsTableBody">
+                            <!-- Ítems dinámicos irán aquí -->
+                            <tr class="empty-placeholder">
+                                <td colspan="6" style="text-align: center; color: #999; padding: 20px;">
+                                    No hay productos agregados en el documento.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </section>
+
+                <!-- SECCIÓN DE FIRMAS Y TOTALES -->
+                <footer class="sheet-footer">
+                    <div class="footer-left">
+                        <div class="signature-box">
+                            <p>Recibí Conforme</p>
+                            <div class="signature-line"></div>
+                        </div>
+                    </div>
+                    <div class="footer-right">
+                        <table class="totals-table">
+                            <tr style="display: none;">
+                                <td class="totals-label" id="labelSubtotal">Sub-Total ($)</td>
+                                <td class="totals-val" id="viewSubtotal">0,00</td>
+                            </tr>
+                            <tr style="display: none;">
+                                <td class="totals-label">I.V.A. 16.0%</td>
+                                <td class="totals-val" id="viewIva">0,00</td>
+                            </tr>
+                            <tr class="grand-total-row">
+                                <td class="totals-label" id="labelTotal">TOTAL $</td>
+                                <td class="totals-val" id="viewTotal">0,00</td>
+                            </tr>
+                        </table>
+                    </div>
+                </footer>
+
+                <!-- NOTA LEGAL / PIE DE PÁGINA -->
+                <div class="sheet-bottom-note">
+                    <p id="viewClientNote"><strong>NOTA:</strong> Favor emitir transferencia o pago a nombre de SUMINISTROS FERRETEROS VITTORIA, C.A. RIF J-40194130-3.</p>
+                    <p id="viewCustomNote" style="font-size: 13px; font-weight: bold; color: #1c3d5a; margin-top: 4px; display: none;"></p>
+                    <p class="legal-print-info">Tipografía Vittoria, S.A. RIF J-08005647-7. Av. Juan de Urpín. Barcelona Edo. Anzoátegui. Documento emitido en Forma Libre.</p>
+                </div>
+            </div>
+        </main>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>

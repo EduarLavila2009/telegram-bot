@@ -1,0 +1,1138 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SUFEVICA - Módulo de Cotizaciones y Notas de Entrega</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Segoe+UI:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        /* Styles from styles.css */
+        :root {
+            --bg-dark: #0f172a;
+            --panel-bg: rgba(30, 41, 59, 0.7);
+            --panel-border: rgba(255, 255, 255, 0.08);
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --primary: #3b82f6;
+            --primary-hover: #2563eb;
+            --primary-glow: rgba(59, 130, 246, 0.35);
+            --success: #10b981;
+            --danger: #ef4444;
+            --info: #06b6d4;
+            --sheet-width: 8.5in;
+            --sheet-height: 11in;
+        }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            font-family: 'Outfit', 'Segoe UI', sans-serif;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+        .app-container {
+            display: flex;
+            min-height: 100vh;
+            width: 100vw;
+        }
+        .control-panel {
+            width: 420px;
+            min-width: 420px;
+            background: var(--panel-bg);
+            backdrop-filter: blur(16px);
+            border-right: 1px solid var(--panel-border);
+            padding: 30px 24px;
+            overflow-y: auto;
+            height: 100vh;
+            box-shadow: 10px 0 30px rgba(0, 0, 0, 0.25);
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+        .panel-header {
+            border-bottom: 1px solid var(--panel-border);
+            padding-bottom: 16px;
+        }
+        .header-logo-container {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 4px;
+        }
+        .header-logo-container h1 {
+            font-size: 24px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            background: linear-gradient(135deg, #60a5fa, #3b82f6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .panel-header p {
+            font-size: 13px;
+            color: var(--text-muted);
+            font-weight: 400;
+        }
+        .panel-section {
+            background: rgba(15, 23, 42, 0.4);
+            border: 1px solid var(--panel-border);
+            border-radius: 12px;
+            padding: 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+        .panel-section h2 {
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            color: var(--text-muted);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+            padding-bottom: 6px;
+            margin-bottom: 4px;
+        }
+        .form-grid {
+            display: grid;
+            grid-template-columns: repeat(12, 1fr);
+            gap: 12px;
+        }
+        .form-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            grid-column: span 12;
+        }
+        .form-grid .form-group {
+            grid-column: span 6;
+        }
+        .form-grid .form-group.span-2 {
+            grid-column: span 2;
+        }
+        .form-grid .form-group.span-10 {
+            grid-column: span 10;
+        }
+        label {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-muted);
+        }
+        input, select, textarea {
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid var(--panel-border);
+            border-radius: 8px;
+            padding: 10px 12px;
+            color: var(--text-main);
+            font-family: inherit;
+            font-size: 13.5px;
+            transition: all 0.25s ease;
+        }
+        input:focus, select:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 8px var(--primary-glow);
+        }
+        input::placeholder {
+            color: #475569;
+        }
+        .btn {
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 600;
+            padding: 10px 16px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .btn-primary {
+            background: var(--primary);
+            color: #ffffff;
+        }
+        .btn-primary:hover {
+            background: var(--primary-hover);
+            box-shadow: 0 0 12px var(--primary-glow);
+        }
+        .btn-danger {
+            background: rgba(239, 68, 68, 0.15);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, 0.25);
+        }
+        .btn-danger:hover {
+            background: var(--danger);
+            color: #ffffff;
+        }
+        .btn-success {
+            background: var(--success);
+            color: #ffffff;
+            font-size: 14px;
+            padding: 12px 20px;
+        }
+        .btn-success:hover {
+            background: #059669;
+            box-shadow: 0 0 15px rgba(16, 185, 129, 0.4);
+            transform: translateY(-1px);
+        }
+        .btn-info {
+            background: rgba(6, 182, 212, 0.15);
+            color: #22d3ee;
+            border: 1px solid rgba(6, 182, 212, 0.25);
+        }
+        .btn-info:hover {
+            background: var(--info);
+            color: #ffffff;
+        }
+        .toggle-group {
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid var(--panel-border);
+            padding: 4px;
+            border-radius: 10px;
+            display: flex;
+            width: 100%;
+        }
+        .toggle-btn {
+            flex: 1;
+            background: transparent;
+            color: var(--text-muted);
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 12.5px;
+        }
+        .toggle-btn.active {
+            background: var(--primary);
+            color: #ffffff;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+        }
+        .currency-toggle-wrapper {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .exchange-rate-container {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            background: rgba(255, 255, 255, 0.02);
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 1px dashed rgba(255, 255, 255, 0.05);
+        }
+        .exchange-rate-container input {
+            width: 90px;
+            padding: 6px 10px;
+            text-align: right;
+        }
+        .panel-actions {
+            margin-top: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            border-top: 1px solid var(--panel-border);
+            padding-top: 20px;
+        }
+        .preview-area {
+            flex: 1;
+            height: 100vh;
+            overflow-y: auto;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            padding: 40px;
+            background: radial-gradient(circle at top, #1e293b 0%, #0f172a 100%);
+        }
+        .printable-sheet {
+            width: var(--sheet-width);
+            height: var(--sheet-height);
+            background-color: #ffffff;
+            color: #2c3e50;
+            padding: 0.6in 0.5in;
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.45);
+            border-radius: 4px;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            font-size: 11.5px;
+            line-height: 1.4;
+        }
+        .sheet-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid #1a1b54;
+            padding-bottom: 12px;
+            margin-bottom: 16px;
+        }
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+        .logo-box-img {
+            width: 250px;
+            height: auto;
+            display: flex;
+            align-items: center;
+        }
+        .sufevica-logo-img {
+            max-width: 100%;
+            height: auto;
+            object-fit: contain;
+        }
+        .header-right {
+            text-align: right;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+        }
+        .header-address, .header-phone, .header-email {
+            font-size: 9.5px;
+            color: #4b5563;
+            line-height: 1.35;
+        }
+        .sheet-form-label {
+            font-size: 12px;
+            font-weight: 800;
+            color: #1a1b54;
+            letter-spacing: 1.5px;
+            border: 1.5px solid #1a1b54;
+            padding: 3px 10px;
+            border-radius: 4px;
+            margin-top: 6px;
+            display: inline-block;
+        }
+        /* Caja de Datos Cliente / Factura - Estilo Forma Libre Allprot */
+        .client-info-box-fl {
+            border: 1px solid #1a1b54;
+            border-radius: 4px;
+            display: flex;
+            margin-bottom: 20px;
+            width: 100%;
+        }
+        .client-left-side {
+            flex: 7; /* Abarca el 70% */
+            padding: 6px 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .doc-right-side {
+            flex: 3; /* Abarca el 30% */
+            border-left: 1px solid #1a1b54;
+            display: flex;
+            flex-direction: column;
+            background: #f8fafc;
+        }
+        .info-row-fl {
+            display: flex;
+            width: 100%;
+            gap: 12px;
+        }
+        .info-col-fl {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .info-col-fl.span-4 {
+            flex: 1;
+        }
+        .info-col-fl.span-6 {
+            flex: 1;
+        }
+        .info-col-fl.span-12 {
+            width: 100%;
+        }
+        .field-label-fl {
+            font-size: 8px;
+            font-weight: 700;
+            text-transform: uppercase;
+            color: #64748b;
+        }
+        .field-value-fl {
+            font-size: 11px;
+            font-weight: 600;
+            color: #1e293b;
+            word-break: break-word;
+        }
+        /* Rejilla de metadatos del documento (Derecha) */
+        .doc-meta-row {
+            padding: 6px 12px;
+            border-bottom: 1px solid #1a1b54;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+        .doc-meta-row:last-child {
+            border-bottom: none;
+        }
+        .doc-type-label-fl {
+            font-size: 12px;
+            font-weight: 800;
+            color: #1a1b54;
+            letter-spacing: 0.5px;
+        }
+        .doc-num-label-fl {
+            font-size: 14px;
+            font-weight: 800;
+            color: #1a1b54;
+        }
+        /* Sección de Tabla de Artículos - Forma Libre Allprot */
+        .items-table-section {
+            flex: 1;
+            margin-bottom: 20px;
+        }
+        .items-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+        }
+        .items-table th {
+            border-top: 1px solid #1a1b54;
+            border-bottom: 1px solid #1a1b54;
+            padding: 8px 4px;
+            font-weight: 700;
+            color: #1a1b54;
+            text-transform: uppercase;
+            font-size: 9.5px;
+        }
+        .items-table td {
+            padding: 8px 4px;
+            border-bottom: none; /* Sin líneas punteadas intermedias */
+            vertical-align: middle;
+        }
+        .items-table tbody tr:last-child td {
+            border-bottom: 1px solid #1a1b54; /* Solo línea al final */
+        }
+        .col-code { width: 12%; text-align: center; }
+        .col-desc { width: 53%; text-align: left; }
+        .col-qty { width: 10%; text-align: center; }
+        .col-price { width: 12%; text-align: right; }
+        .col-total { width: 13%; text-align: right; font-weight: 700; }
+        .col-actions { width: 40px; text-align: center; }
+        .btn-delete-item {
+            background: transparent;
+            color: #ef4444;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+            opacity: 0.6;
+            transition: opacity 0.2s;
+            padding: 2px;
+        }
+        .btn-delete-item:hover { opacity: 1; }
+        .sheet-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            margin-bottom: 20px;
+        }
+        .footer-left { flex: 1; }
+        .signature-box {
+            width: 180px;
+            text-align: center;
+            margin-top: 40px;
+        }
+        .signature-box p {
+            font-size: 9.5px;
+            font-weight: 600;
+            color: #475569;
+            margin-bottom: 30px;
+        }
+        .signature-line { border-bottom: 1px solid #1c3d5a; }
+        .footer-right { width: 250px; }
+        .totals-table {
+            width: 100%;
+            border-collapse: collapse;
+            border: 1px solid #1c3d5a;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .totals-table td {
+            padding: 6px 10px;
+            font-size: 11px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        .totals-table tr:last-child td { border-bottom: none; }
+        .totals-label { text-align: left; font-weight: 600; color: #475569; }
+        .totals-val { text-align: right; font-weight: 700; color: #1e293b; }
+        .grand-total-row { background: #f8fafc; }
+        .grand-total-row td {
+            font-size: 12.5px;
+            font-weight: 800;
+            color: #1e3a8a;
+            border-top: 1.5px solid #1c3d5a;
+        }
+        .sheet-bottom-note {
+            border-top: 1px solid #cbd5e1;
+            padding-top: 8px;
+            font-size: 8.5px;
+            color: #64748b;
+            line-height: 1.4;
+        }
+        .sheet-bottom-note p { margin-bottom: 4px; }
+        .sheet-bottom-note p:last-child { margin-bottom: 0; }
+        .legal-print-info { font-style: italic; color: #94a3b8; }
+        
+        @media print {
+            body {
+                background-color: #ffffff !important;
+                color: #000000 !important;
+            }
+            .control-panel { display: none !important; }
+            .preview-area {
+                padding: 0 !important;
+                background: #ffffff !important;
+                overflow: visible !important;
+                height: auto !important;
+            }
+            .no-print { display: none !important; }
+            .printable-sheet {
+                box-shadow: none !important;
+                border-radius: 0 !important;
+                padding: 0.3in 0.3in 0 0.3in !important;
+                width: 100% !important;
+                height: auto !important;
+                min-height: auto !important;
+                overflow: visible !important;
+            }
+            .doc-title-box {
+                background: #f1f5f9 !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+            .grand-total-row {
+                background: #f8fafc !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+            @page {
+                size: letter;
+                margin: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Panel de Control Izquierdo (Oculto en Impresión) -->
+        <aside class="control-panel">
+            <header class="panel-header">
+                <div class="header-logo-container">
+                    <svg class="header-logo-svg" viewBox="0 0 100 100" width="40" height="40">
+                        <rect x="25" y="25" width="50" height="50" rx="6" transform="rotate(45 50 50)" fill="#4A6fa5"/>
+                        <path d="M50 35 L50 65 M35 50 L65 50" stroke="#ffffff" stroke-width="4" stroke-linecap="round"/>
+                        <circle cx="50" cy="50" r="10" fill="none" stroke="#ffffff" stroke-width="3"/>
+                    </svg>
+                    <h1>SUFEVICA</h1>
+                </div>
+                <p>Gestor de Documentos de Clientes</p>
+            </header>
+
+            <div class="panel-section">
+                <h2>1. Tipo de Documento</h2>
+                <div class="btn-group toggle-group" id="docTypeToggle">
+                    <button class="btn toggle-btn active" data-type="cotizacion">Cotización</button>
+                    <button class="btn toggle-btn" data-type="nota">Nota de Entrega</button>
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <h2>2. Moneda del Documento</h2>
+                <div class="currency-toggle-wrapper">
+                    <div class="btn-group toggle-group" id="currencyToggle">
+                        <button class="btn toggle-btn active" data-currency="usd">Dólares ($)</button>
+                        <button class="btn toggle-btn" data-currency="ves">Bolívares (Bs.)</button>
+                    </div>
+                    <div class="exchange-rate-container" id="rateContainer">
+                        <label for="exchangeRate">Tasa de Cambio (Bs./$):</label>
+                        <input type="number" id="exchangeRate" value="550.00" step="0.01" min="1">
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <h2>3. Datos del Documento</h2>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="docNumber">Nro. Documento:</label>
+                        <input type="text" id="docNumber" value="001001" placeholder="Ej: 001403">
+                    </div>
+                    <div class="form-group">
+                        <label for="docDate">Fecha Emisión:</label>
+                        <input type="date" id="docDate">
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <h2>4. Datos del Cliente</h2>
+                <div class="form-group">
+                    <label for="clientName">Nombre / Razón Social:</label>
+                    <input type="text" id="clientName" placeholder="Nombre del cliente o empresa">
+                </div>
+                <div class="form-group">
+                    <label for="clientAddress">Dirección Fiscal:</label>
+                    <input type="text" id="clientAddress" placeholder="Dirección del cliente">
+                </div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="clientRif">RIF / C.I.:</label>
+                        <input type="text" id="clientRif" placeholder="J-12345678-9 o V-12345678">
+                    </div>
+                    <div class="form-group">
+                        <label for="clientPhone">Teléfonos:</label>
+                        <input type="text" id="clientPhone" placeholder="Ej: 0414-1900669">
+                    </div>
+                </div>
+                <div class="form-grid">
+                    <div class="form-group">
+                        <label for="salesman">Vendedor:</label>
+                        <input type="text" id="salesman" value="FREDDY LOPEZ" placeholder="Nombre vendedor">
+                    </div>
+                    <div class="form-group">
+                        <label for="saleType">Tipo Venta:</label>
+                        <select id="saleType">
+                            <option value="Contado" selected>Contado</option>
+                            <option value="Crédito">Crédito</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group" style="margin-top: 8px;">
+                    <label for="clientNote">Nota:</label>
+                    <input type="text" id="clientNote" placeholder="Nota adicional (dejar vacío para usar por defecto)">
+                </div>
+            </div>
+
+            <div class="panel-section">
+                <h2>5. Agregar Productos / Servicios</h2>
+                <form id="itemForm" onsubmit="event.preventDefault();">
+                    <div class="form-grid">
+                        <div class="form-group span-2">
+                            <label for="itemCode">Código:</label>
+                            <input type="text" id="itemCode" placeholder="Ej: PARP-220">
+                        </div>
+                        <div class="form-group span-10">
+                            <label for="itemDesc">Descripción:</label>
+                            <input type="text" id="itemDesc" placeholder="Descripción del producto">
+                        </div>
+                    </div>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label for="itemQty">Cantidad:</label>
+                            <input type="number" id="itemQty" value="1" min="1" step="any">
+                        </div>
+                        <div class="form-group">
+                            <label for="itemPrice">Precio unitario ($):</label>
+                            <input type="number" id="itemPrice" value="0.00" min="0" step="0.01">
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" id="addItemBtn">Añadir a la lista</button>
+                </form>
+            </div>
+
+            <div class="panel-actions">
+                <button class="btn btn-danger" id="clearBtn">Limpiar Todo</button>
+                <button class="btn btn-info" id="draftBtn">Guardar Borrador</button>
+                <button class="btn btn-success" id="printBtn">Imprimir / PDF 🖨️</button>
+            </div>
+        </aside>
+
+        <!-- Vista Previa Imprimible Derecha -->
+        <main class="preview-area">
+            <div class="printable-sheet" id="printableSheet">
+                <header class="sheet-header">
+                    <div class="header-left">
+                        <div class="logo-box-img" style="display: flex; align-items: center; gap: 8px;">
+                            <img src="logo_icono.jpg" alt="SUFEVICA Icono" style="height: 38px; width: auto; display: block;">
+                            <img src="logo_texto.jpg" alt="SUFEVICA Texto" style="height: 25px; width: auto; display: block; margin-top: 2px;">
+                        </div>
+                    </div>
+                    <div class="header-right">
+                        <p class="header-address">Av. Juan de Urpín, C.C. Residencias Vittoria III, Edificio F, Nivel P.B.</p>
+                        <p class="header-address">Local Nº 2 - Sector El Espejo - Barcelona - Estado Anzoátegui</p>
+                        <p class="header-phone">Telfs.: 0281-276.87.65 - 0414-817.88.77</p>
+                        <p class="header-email">Correo: sufevica@gmail.com</p>
+                        <span class="sheet-form-label">FORMA LIBRE</span>
+                    </div>
+                </header>
+
+                <!-- CAJA DE INFORMACIÓN DEL CLIENTE (Idéntico al formato Allprot) -->
+                <section class="client-info-box-fl">
+                    <!-- Lado Izquierdo: Rejilla de Datos del Cliente -->
+                    <div class="client-left-side">
+                        <div class="info-row-fl">
+                            <div class="info-col-fl span-6">
+                                <span class="field-label-fl">Cliente</span>
+                                <span class="field-value-fl" id="viewClientName">—</span>
+                            </div>
+                            <div class="info-col-fl span-6">
+                                <span class="field-label-fl">Vendedor</span>
+                                <span class="field-value-fl" id="viewSalesman">FREDDY LOPEZ</span>
+                            </div>
+                        </div>
+                        <div class="info-row-fl">
+                            <div class="info-col-fl span-12">
+                                <span class="field-label-fl">Dirección</span>
+                                <span class="field-value-fl" id="viewClientAddress">—</span>
+                            </div>
+                        </div>
+                        <div class="info-row-fl">
+                            <div class="info-col-fl span-4">
+                                <span class="field-label-fl">R.I.F/C.I</span>
+                                <span class="field-value-fl" id="viewClientRif">—</span>
+                            </div>
+                            <div class="info-col-fl span-4">
+                                <span class="field-label-fl">Telefonos</span>
+                                <span class="field-value-fl" id="viewClientPhone">—</span>
+                            </div>
+                            <div class="info-col-fl span-4">
+                                <span class="field-label-fl">Tipo Venta</span>
+                                <span class="field-value-fl" id="viewSaleType">Contado</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Lado Derecho: Bloque Metadatos del Documento -->
+                    <div class="doc-right-side">
+                        <div class="doc-meta-row header-doc-title">
+                            <span class="doc-type-label-fl" id="viewDocTypeTitle">COTIZACIÓN</span>
+                        </div>
+                <!-- DATOS DEL CLIENTE -->
+                <section class="sheet-client-info">
+                    <div class="info-row">
+                        <div class="info-col">
+                            <span class="field-label-fl">Nombre o Razón Social:</span>
+                            <span class="field-value-fl" id="viewClientName">—</span>
+                        </div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-col col-8">
+                            <span class="field-label-fl">Dirección Fiscal:</span>
+                            <span class="field-value-fl" id="viewClientAddress">—</span>
+                        </div>
+                        <div class="info-col col-4">
+                            <span class="field-label-fl">RIF / C.I.:</span>
+                            <span class="field-value-fl" id="viewClientRif">—</span>
+                        </div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-col col-4">
+                            <span class="field-label-fl">Teléfono:</span>
+                            <span class="field-value-fl" id="viewClientPhone">—</span>
+                        </div>
+                        <div class="info-col col-4">
+                            <span class="field-label-fl">Vendedor:</span>
+                            <span class="field-value-fl" id="viewSalesman">—</span>
+                        </div>
+                        <div class="info-col col-4">
+                            <span class="field-label-fl">Condiciones de Pago:</span>
+                            <span class="field-value-fl" id="viewSaleType">Contado</span>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- TABLA DE ITEMS -->
+                <section class="sheet-table-section">
+                    <table class="items-table-fl">
+                        <thead>
+                            <tr>
+                                <th class="col-code">Código</th>
+                                <th class="col-desc">Descripción del Producto o Servicio</th>
+                                <th class="col-qty">Cant.</th>
+                                <th class="col-price" id="colPriceHeader">Precio ($)</th>
+                                <th class="col-total" id="colTotalHeader">Total ($)</th>
+                                <th class="col-actions no-print"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="itemsTableBody">
+                            <!-- Ítems dinámicos irán aquí -->
+                            <tr class="empty-placeholder">
+                                <td colspan="6" style="text-align: center; color: #999; padding: 20px;">
+                                    No hay productos agregados en el documento.
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </section>
+
+                <!-- SECCIÓN DE FIRMAS Y TOTALES -->
+                <footer class="sheet-footer">
+                    <div class="footer-left">
+                        <div class="signature-box">
+                            <p>Recibí Conforme</p>
+                            <div class="signature-line"></div>
+                        </div>
+                    </div>
+                    <div class="footer-right">
+                        <table class="totals-table">
+                            <tr style="display: none;">
+                                <td class="totals-label" id="labelSubtotal">Sub-Total ($)</td>
+                                <td class="totals-val" id="viewSubtotal">0,00</td>
+                            </tr>
+                            <tr style="display: none;">
+                                <td class="totals-label">I.V.A. 16.0%</td>
+                                <td class="totals-val" id="viewIva">0,00</td>
+                            </tr>
+                            <tr class="grand-total-row">
+                                <td class="totals-label" id="labelTotal">TOTAL $</td>
+                                <td class="totals-val" id="viewTotal">0,00</td>
+                            </tr>
+                        </table>
+                    </div>
+                </footer>
+
+                <div class="sheet-bottom-note">
+                    <p id="viewClientNote"><strong>NOTA:</strong> Favor emitir transferencia o pago a nombre de SUMINISTROS FERRETEROS VITTORIA, C.A. RIF J-40194130-3.</p>
+                    <p id="viewCustomNote" style="font-size: 13px; font-weight: bold; color: #1c3d5a; margin-top: 4px; display: none;"></p>
+                    <p class="legal-print-info">Tipografía Vittoria, S.A. RIF J-08005647-7. Av. Juan de Urpín. Barcelona Edo. Anzoátegui. Documento emitido en Forma Libre.</p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // Scripts from app.js
+        document.addEventListener("DOMContentLoaded", () => {
+            const state = {
+                docType: "cotizacion",
+                currency: "usd",
+                exchangeRate: 550.00,
+                docNumber: "001001",
+                docDate: new Date().toISOString().split("T")[0],
+                client: { name: "", address: "", rif: "", phone: "", salesman: "FREDDY LOPEZ", saleType: "Contado", note: "" },
+                items: []
+            };
+
+            const elExchangeRate = document.getElementById("exchangeRate");
+            const elDocNumber = document.getElementById("docNumber");
+            const elDocDate = document.getElementById("docDate");
+            const elClientName = document.getElementById("clientName");
+            const elClientAddress = document.getElementById("clientAddress");
+            const elClientRif = document.getElementById("clientRif");
+            const elClientPhone = document.getElementById("clientPhone");
+            const elSalesman = document.getElementById("salesman");
+            const elSaleType = document.getElementById("saleType");
+            const elClientNote = document.getElementById("clientNote");
+
+            const elItemCode = document.getElementById("itemCode");
+            const elItemDesc = document.getElementById("itemDesc");
+            const elItemQty = document.getElementById("itemQty");
+            const elItemPrice = document.getElementById("itemPrice");
+            const btnAddItem = document.getElementById("addItemBtn");
+
+            const viewDocTypeTitle = document.getElementById("viewDocTypeTitle");
+            const viewDocNumber = document.getElementById("viewDocNumber");
+            const viewDocDate = document.getElementById("viewDocDate");
+            const viewClientName = document.getElementById("viewClientName");
+            const viewClientAddress = document.getElementById("viewClientAddress");
+            const viewClientRif = document.getElementById("viewClientRif");
+            const viewClientPhone = document.getElementById("viewClientPhone");
+            const viewSaleType = document.getElementById("viewSaleType");
+            const viewSalesman = document.getElementById("viewSalesman");
+
+            const itemsTableBody = document.getElementById("itemsTableBody");
+            const colPriceHeader = document.getElementById("colPriceHeader");
+            const colTotalHeader = document.getElementById("colTotalHeader");
+
+            const labelSubtotal = document.getElementById("labelSubtotal");
+            const labelTotal = document.getElementById("labelTotal");
+            const viewSubtotal = document.getElementById("viewSubtotal");
+            const viewIva = document.getElementById("viewIva");
+            const viewTotal = document.getElementById("viewTotal");
+
+            const btnClear = document.getElementById("clearBtn");
+            const btnDraft = document.getElementById("draftBtn");
+            const btnPrint = document.getElementById("printBtn");
+
+            function formatNumber(num) {
+                return Number(num).toLocaleString("es-VE", {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2
+                });
+            }
+
+            function formatDate(dateStr) {
+                if (!dateStr) return "—";
+                const parts = dateStr.split("-");
+                if (parts.length !== 3) return dateStr;
+                return `${parts[2]}/${parts[1]}/${parts[0]}`;
+            }
+
+            function renderDocument() {
+                const rate = state.currency === "ves" ? state.exchangeRate : 1;
+                const curSymbol = state.currency === "usd" ? "$" : "Bs.";
+
+                viewDocTypeTitle.textContent = state.docType === "cotizacion" ? "COTIZACIÓN" : "NOTA DE ENTREGA";
+                viewDocNumber.textContent = `Nº ${state.docNumber || "S/N"}`;
+                viewDocDate.textContent = formatDate(state.docDate);
+                viewClientName.textContent = state.client.name || "—";
+                viewClientAddress.textContent = state.client.address || "—";
+                viewClientRif.textContent = state.client.rif || "—";
+                viewClientPhone.textContent = state.client.phone || "—";
+                viewSaleType.textContent = state.client.saleType;
+                viewSalesman.textContent = state.client.salesman || "—";
+
+                // Sincronizar Nota
+                const viewClientNote = document.getElementById("viewClientNote");
+                const viewCustomNote = document.getElementById("viewCustomNote");
+                if (viewClientNote) {
+                    viewClientNote.innerHTML = state.docType === "cotizacion"
+                        ? "<strong>NOTA:</strong> Precios sujetos a cambio sin previo aviso. Esta cotización representa un presupuesto informativo. ¡Gracias por su preferencia!"
+                        : "<strong>NOTA:</strong> La mercancía viaja por cuenta y riesgo del cliente. Documento de despacho informativo. ¡Gracias por su preferencia!";
+                }
+                if (viewCustomNote) {
+                    if (state.client.note && state.client.note.trim() !== "") {
+                        viewCustomNote.textContent = state.client.note;
+                        viewCustomNote.style.display = "block";
+                    } else {
+                        viewCustomNote.style.display = "none";
+                    }
+                }
+
+                colPriceHeader.textContent = `Precio (${curSymbol})`;
+                colTotalHeader.textContent = `Total (${curSymbol})`;
+                labelSubtotal.textContent = `Sub-Total (${curSymbol})`;
+                labelTotal.textContent = `TOTAL ${state.currency === "usd" ? "$" : "Bs"}`;
+
+                itemsTableBody.innerHTML = "";
+                
+                if (state.items.length === 0) {
+                    const tr = document.createElement("tr");
+                    tr.className = "empty-placeholder";
+                    tr.innerHTML = `<td colspan="6" style="text-align: center; color: #999; padding: 20px;">No hay productos agregados en el documento.</td>`;
+                    itemsTableBody.appendChild(tr);
+
+                    viewSubtotal.textContent = "0,00";
+                    viewIva.textContent = "0,00";
+                    viewTotal.textContent = "0,00";
+                    return;
+                }
+
+                let subtotalUsd = 0;
+
+                state.items.forEach((item, index) => {
+                    const itemPriceConv = item.priceUsd * rate;
+                    const itemTotalConv = item.qty * itemPriceConv;
+                    subtotalUsd += (item.qty * item.priceUsd);
+
+                    const tr = document.createElement("tr");
+                    tr.innerHTML = `
+                        <td class="col-code">${item.code || "—"}</td>
+                        <td class="col-desc">${item.desc}</td>
+                        <td class="col-qty">${item.qty}</td>
+                        <td class="col-price">${formatNumber(itemPriceConv)}</td>
+                        <td class="col-total">${formatNumber(itemTotalConv)}</td>
+                        <td class="col-actions no-print">
+                            <button class="btn-delete-item" data-index="${index}">🗑️</button>
+                        </td>
+                    `;
+                    itemsTableBody.appendChild(tr);
+                });
+
+                document.querySelectorAll(".btn-delete-item").forEach(btn => {
+                    btn.addEventListener("click", (e) => {
+                        const idx = parseInt(e.target.getAttribute("data-index"));
+                        deleteItem(idx);
+                    });
+                });
+
+                const totalConv = subtotalUsd * rate;
+
+                viewSubtotal.textContent = formatNumber(totalConv);
+                viewIva.textContent = "0,00";
+                viewTotal.textContent = formatNumber(totalConv);
+            }
+
+            function deleteItem(idx) {
+                state.items.splice(idx, 1);
+                renderDocument();
+                saveDraftAuto();
+            }
+
+            function addItem() {
+                const code = elItemCode.value.trim().toUpperCase();
+                const desc = elItemDesc.value.trim();
+                const qty = parseFloat(elItemQty.value);
+                const price = parseFloat(elItemPrice.value);
+
+                if (!desc) {
+                    alert("⚠️ Por favor ingresa una descripción para el producto.");
+                    elItemDesc.focus();
+                    return;
+                }
+                if (isNaN(qty) || qty <= 0) {
+                    alert("⚠️ La cantidad debe ser un número mayor a cero.");
+                    elItemQty.focus();
+                    return;
+                }
+                if (isNaN(price) || price < 0) {
+                    alert("⚠️ El precio unitario debe ser igual o mayor a cero.");
+                    elItemPrice.focus();
+                    return;
+                }
+
+                state.items.push({ code, desc, qty, priceUsd: price });
+
+                elItemCode.value = "";
+                elItemDesc.value = "";
+                elItemQty.value = "1";
+                elItemPrice.value = "0.00";
+
+                renderDocument();
+                saveDraftAuto();
+                elItemCode.focus();
+            }
+
+            function clearDocument() {
+                if (!confirm("⚠️ ¿Estás seguro de que deseas limpiar todo el documento? Perderás los datos ingresados.")) return;
+                state.items = [];
+                state.client.name = "";
+                state.client.address = "";
+                state.client.rif = "";
+                state.client.phone = "";
+                state.client.note = "";
+                state.docNumber = "001001";
+                
+                elClientName.value = "";
+                elClientAddress.value = "";
+                elClientRif.value = "";
+                elClientPhone.value = "";
+                elClientNote.value = "";
+                elDocNumber.value = "001001";
+                
+                renderDocument();
+                localStorage.removeItem("sufevica_draft");
+            }
+
+            function saveDraft() {
+                localStorage.setItem("sufevica_draft", JSON.stringify(state));
+                alert("💾 ¡Borrador guardado con éxito! Se cargará automáticamente al volver a abrir esta página.");
+            }
+
+            function saveDraftAuto() {
+                localStorage.setItem("sufevica_draft", JSON.stringify(state));
+            }
+
+            function loadDraft() {
+                if (state.items && state.items.length > 0) return;
+                const raw = localStorage.getItem("sufevica_draft");
+                if (!raw) return;
+                try {
+                    const draft = JSON.parse(raw);
+                    state.docType = draft.docType || "cotizacion";
+                    state.currency = draft.currency || "usd";
+                    state.exchangeRate = parseFloat(draft.exchangeRate) || 550.00;
+                    state.docNumber = draft.docNumber || "001001";
+                    state.docDate = draft.docDate || new Date().toISOString().split("T")[0];
+                    state.client = draft.client || { name: "", address: "", rif: "", phone: "", salesman: "FREDDY LOPEZ", saleType: "Contado", note: "" };
+                    state.items = draft.items || [];
+
+                    elExchangeRate.value = state.exchangeRate;
+                    elDocNumber.value = state.docNumber;
+                    elDocDate.value = state.docDate;
+                    elClientName.value = state.client.name;
+                    elClientAddress.value = state.client.address;
+                    elClientRif.value = state.client.rif;
+                    elClientPhone.value = state.client.phone;
+                    elSalesman.value = state.client.salesman;
+                    elSaleType.value = state.client.saleType;
+                    elClientNote.value = state.client.note || "";
+
+                    document.querySelectorAll("#docTypeToggle .toggle-btn").forEach(btn => {
+                        btn.classList.toggle("active", btn.getAttribute("data-type") === state.docType);
+                    });
+
+                    document.querySelectorAll("#currencyToggle .toggle-btn").forEach(btn => {
+                        btn.classList.toggle("active", btn.getAttribute("data-currency") === state.currency);
+                    });
+
+                    renderDocument();
+                } catch (e) {
+                    console.error("Error al cargar borrador", e);
+                }
+            }
+
+            document.querySelectorAll("#docTypeToggle .toggle-btn").forEach(btn => {
+                btn.addEventListener("click", (e) => {
+                    document.querySelectorAll("#docTypeToggle .toggle-btn").forEach(b => b.classList.remove("active"));
+                    e.target.classList.add("active");
+                    state.docType = e.target.getAttribute("data-type");
+                    renderDocument();
+                    saveDraftAuto();
+                });
+            });
+
+            document.querySelectorAll("#currencyToggle .toggle-btn").forEach(btn => {
+                btn.addEventListener("click", (e) => {
+                    document.querySelectorAll("#currencyToggle .toggle-btn").forEach(b => b.classList.remove("active"));
+                    e.target.classList.add("active");
+                    state.currency = e.target.getAttribute("data-currency");
+                    renderDocument();
+                    saveDraftAuto();
+                });
+            });
+
+            elDocNumber.addEventListener("input", (e) => { state.docNumber = e.target.value; renderDocument(); saveDraftAuto(); });
+            elDocDate.addEventListener("change", (e) => { state.docDate = e.target.value; renderDocument(); saveDraftAuto(); });
+            elExchangeRate.addEventListener("input", (e) => { state.exchangeRate = parseFloat(e.target.value) || 1.00; renderDocument(); saveDraftAuto(); });
+            elClientName.addEventListener("input", (e) => { state.client.name = e.target.value; renderDocument(); saveDraftAuto(); });
+            elClientAddress.addEventListener("input", (e) => { state.client.address = e.target.value; renderDocument(); saveDraftAuto(); });
+            elClientRif.addEventListener("input", (e) => { state.client.rif = e.target.value; renderDocument(); saveDraftAuto(); });
+            elClientPhone.addEventListener("input", (e) => { state.client.phone = e.target.value; renderDocument(); saveDraftAuto(); });
+            elSalesman.addEventListener("input", (e) => { state.client.salesman = e.target.value; renderDocument(); saveDraftAuto(); });
+            elClientNote.addEventListener("input", (e) => { state.client.note = e.target.value; renderDocument(); saveDraftAuto(); });
+            elSaleType.addEventListener("change", (e) => { state.client.saleType = e.target.value; renderDocument(); saveDraftAuto(); });
+
+            btnAddItem.addEventListener("click", addItem);
+            btnClear.addEventListener("click", clearDocument);
+            btnDraft.addEventListener("click", saveDraft);
+            btnPrint.addEventListener("click", () => { window.print(); });
+
+            elDocDate.value = state.docDate;
+            loadDraft();
+
+            // Obtener tasa oficial BCV en tiempo real (vía DolarAPI)
+            fetch("https://ve.dolarapi.com/v1/dolares/oficial")
+                .then(response => response.json())
+                .then(data => {
+                    if (data && data.promedio) {
+                        const liveRate = parseFloat(data.promedio);
+                        state.exchangeRate = liveRate;
+                        elExchangeRate.value = liveRate.toFixed(2);
+                        renderDocument();
+                        saveDraftAuto();
+                    }
+                })
+                .catch(err => console.error("Error al obtener la tasa oficial del BCV:", err));
+
+            // Predeterminar tipo de documento según parámetro en URL (?type=...) o hash (#...)
+            const urlParams = new URLSearchParams(window.location.search);
+            let urlType = urlParams.get("type") || urlParams.get("docType");
+            if (!urlType && window.location.hash) {
+                const hash = window.location.hash.toLowerCase();
+                if (hash.includes("nota") || hash.includes("entrega")) {
+                    urlType = "nota";
+                } else if (hash.includes("cotizacion") || hash.includes("presupuesto")) {
+                    urlType = "cotizacion";
+                }
+            }
+            if (urlType === "nota" || urlType === "cotizacion") {
+                state.docType = urlType;
+                document.querySelectorAll("#docTypeToggle .toggle-btn").forEach(btn => {
+                    btn.classList.toggle("active", btn.getAttribute("data-type") === state.docType);
+                });
+            }
+
+            renderDocument();
+        });
+    </script>
+</body>
+</html>

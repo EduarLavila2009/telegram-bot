@@ -1,0 +1,683 @@
+/* ==========================================================================
+   SISTEMA DE DISEÑO PREMIUM - SUFEVICA COTIZACIONES
+   ========================================================================== */
+
+:root {
+    --bg-dark: #0f172a;
+    --panel-bg: rgba(30, 41, 59, 0.7);
+    --panel-border: rgba(255, 255, 255, 0.08);
+    --text-main: #f8fafc;
+    --text-muted: #94a3b8;
+    --primary: #3b82f6;
+    --primary-hover: #2563eb;
+    --primary-glow: rgba(59, 130, 246, 0.35);
+    
+    --success: #10b981;
+    --danger: #ef4444;
+    --info: #06b6d4;
+    
+    --sheet-width: 8.5in;
+    --sheet-height: 11in;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    background-color: var(--bg-dark);
+    color: var(--text-main);
+    font-family: 'Outfit', 'Segoe UI', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+}
+
+/* Contenedor Principal Split */
+.app-container {
+    display: flex;
+    min-height: 100vh;
+    width: 100vw;
+}
+
+/* ==========================================================================
+   ESTILO PANEL DE CONTROL (IZQUIERDO)
+   ========================================================================== */
+.control-panel {
+    width: 420px;
+    min-width: 420px;
+    background: var(--panel-bg);
+    backdrop-filter: blur(16px);
+    border-right: 1px solid var(--panel-border);
+    padding: 30px 24px;
+    overflow-y: auto;
+    height: 100vh;
+    box-shadow: 10px 0 30px rgba(0, 0, 0, 0.25);
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+}
+
+.panel-header {
+    border-bottom: 1px solid var(--panel-border);
+    padding-bottom: 16px;
+}
+
+.header-logo-container {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 4px;
+}
+
+.header-logo-container h1 {
+    font-size: 24px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    background: linear-gradient(135deg, #60a5fa, #3b82f6);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.panel-header p {
+    font-size: 13px;
+    color: var(--text-muted);
+    font-weight: 400;
+}
+
+/* Secciones de Configuración */
+.panel-section {
+    background: rgba(15, 23, 42, 0.4);
+    border: 1px solid var(--panel-border);
+    border-radius: 12px;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.panel-section h2 {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: var(--text-muted);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    padding-bottom: 6px;
+    margin-bottom: 4px;
+}
+
+/* Formularios y Inputs */
+.form-grid {
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 12px;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    grid-column: span 12;
+}
+
+.form-grid .form-group {
+    grid-column: span 6;
+}
+
+.form-grid .form-group.span-2 {
+    grid-column: span 2;
+}
+.form-grid .form-group.span-10 {
+    grid-column: span 10;
+}
+
+label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-muted);
+}
+
+input, select, textarea {
+    background: rgba(30, 41, 59, 0.8);
+    border: 1px solid var(--panel-border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: var(--text-main);
+    font-family: inherit;
+    font-size: 13.5px;
+    transition: all 0.25s ease;
+}
+
+input:focus, select:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 8px var(--primary-glow);
+}
+
+input::placeholder {
+    color: #475569;
+}
+
+/* Botones y Toggles */
+.btn {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 10px 16px;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+.btn-primary {
+    background: var(--primary);
+    color: #ffffff;
+}
+
+.btn-primary:hover {
+    background: var(--primary-hover);
+    box-shadow: 0 0 12px var(--primary-glow);
+}
+
+.btn-danger {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+.btn-danger:hover {
+    background: var(--danger);
+    color: #ffffff;
+}
+
+.btn-success {
+    background: var(--success);
+    color: #ffffff;
+    font-size: 14px;
+    padding: 12px 20px;
+}
+
+.btn-success:hover {
+    background: #059669;
+    box-shadow: 0 0 15px rgba(16, 185, 129, 0.4);
+    transform: translateY(-1px);
+}
+
+.btn-info {
+    background: rgba(6, 182, 212, 0.15);
+    color: #22d3ee;
+    border: 1px solid rgba(6, 182, 212, 0.25);
+}
+
+.btn-info:hover {
+    background: var(--info);
+    color: #ffffff;
+}
+
+/* Toggle Group (Cotizacion/Nota, USD/VES) */
+.toggle-group {
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid var(--panel-border);
+    padding: 4px;
+    border-radius: 10px;
+    display: flex;
+    width: 100%;
+}
+
+.toggle-btn {
+    flex: 1;
+    background: transparent;
+    color: var(--text-muted);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 12.5px;
+}
+
+.toggle-btn.active {
+    background: var(--primary);
+    color: #ffffff;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+/* Conmutador de Moneda + Tasa */
+.currency-toggle-wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.exchange-rate-container {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: rgba(255, 255, 255, 0.02);
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px dashed rgba(255, 255, 255, 0.05);
+}
+
+.exchange-rate-container input {
+    width: 90px;
+    padding: 6px 10px;
+    text-align: right;
+}
+
+.panel-actions {
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    border-top: 1px solid var(--panel-border);
+    padding-top: 20px;
+}
+
+/* ==========================================================================
+   ESTILO AREA DE VISTA PREVIA (DERECHA)
+   ========================================================================== */
+.preview-area {
+    flex: 1;
+    height: 100vh;
+    overflow-y: auto;
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 40px;
+    background: radial-gradient(circle at top, #1e293b 0%, #0f172a 100%);
+}
+
+.printable-sheet {
+    width: var(--sheet-width);
+    height: var(--sheet-height);
+    background-color: #ffffff;
+    color: #2c3e50;
+    padding: 0.6in 0.5in;
+    box-shadow: 0 15px 40px rgba(0, 0, 0, 0.45);
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    font-size: 11.5px;
+    line-height: 1.4;
+}
+
+/* Cabecera Documento SUFEVICA */
+.sheet-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    border-bottom: 2px solid #2b4c7e;
+    padding-bottom: 12px;
+    margin-bottom: 16px;
+}
+
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.logo-box-img {
+    width: 250px;
+    height: auto;
+    display: flex;
+    align-items: center;
+}
+
+.sufevica-logo-img {
+    max-width: 100%;
+    height: auto;
+    object-fit: contain;
+}
+
+.header-right {
+    text-align: right;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+}
+
+.header-address, .header-phone, .header-email {
+    font-size: 9.5px;
+    color: #4b5563;
+    line-height: 1.35;
+}
+
+.sheet-form-label {
+    font-size: 12px;
+    font-weight: 800;
+    color: #1a1b54;
+    letter-spacing: 1.5px;
+    border: 1.5px solid #1a1b54;
+    padding: 3px 10px;
+    border-radius: 4px;
+    margin-top: 6px;
+    display: inline-block;
+}
+
+/* Caja de Datos Cliente / Factura - Estilo Forma Libre Allprot */
+.client-info-box-fl {
+    border: 1px solid #1a1b54;
+    border-radius: 4px;
+    display: flex;
+    margin-bottom: 20px;
+    width: 100%;
+}
+
+.client-left-side {
+    flex: 7; /* Abarca el 70% */
+    padding: 6px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.doc-right-side {
+    flex: 3; /* Abarca el 30% */
+    border-left: 1px solid #1a1b54;
+    display: flex;
+    flex-direction: column;
+    background: #f8fafc;
+}
+
+.info-row-fl {
+    display: flex;
+    width: 100%;
+    gap: 12px;
+}
+
+.info-col-fl {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.info-col-fl.span-4 {
+    flex: 1;
+}
+
+.info-col-fl.span-6 {
+    flex: 1;
+}
+
+.info-col-fl.span-12 {
+    width: 100%;
+}
+
+.field-label-fl {
+    font-size: 8px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #64748b;
+}
+
+.field-value-fl {
+    font-size: 11px;
+    font-weight: 600;
+    color: #1e293b;
+    word-break: break-word;
+}
+
+/* Rejilla de metadatos del documento (Derecha) */
+.doc-meta-row {
+    padding: 6px 12px;
+    border-bottom: 1px solid #1a1b54;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.doc-meta-row:last-child {
+    border-bottom: none;
+}
+
+.doc-type-label-fl {
+    font-size: 12px;
+    font-weight: 800;
+    color: #1a1b54;
+    letter-spacing: 0.5px;
+}
+
+.doc-num-label-fl {
+    font-size: 14px;
+    font-weight: 800;
+    color: #1a1b54;
+}
+
+/* Sección de Tabla de Artículos - Forma Libre Allprot */
+.items-table-section {
+    flex: 1;
+    margin-bottom: 20px;
+}
+
+.items-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+}
+
+.items-table th {
+    border-top: 1px solid #1a1b54;
+    border-bottom: 1px solid #1a1b54;
+    padding: 8px 4px;
+    font-weight: 700;
+    color: #1a1b54;
+    text-transform: uppercase;
+    font-size: 9.5px;
+}
+
+.items-table td {
+    padding: 8px 4px;
+    border-bottom: none; /* Sin líneas punteadas intermedias */
+    vertical-align: middle;
+}
+
+.items-table tbody tr:last-child td {
+    border-bottom: 1px solid #1a1b54; /* Solo línea al final */
+}
+
+.col-code {
+    width: 12%;
+    text-align: center;
+}
+
+.col-desc {
+    width: 53%;
+    text-align: left;
+}
+
+.col-qty {
+    width: 10%;
+    text-align: center;
+}
+
+.col-price {
+    width: 12%;
+    text-align: right;
+}
+
+.col-total {
+    width: 13%;
+    text-align: right;
+    font-weight: 700;
+}
+
+.col-actions {
+    width: 40px;
+    text-align: center;
+}
+
+/* Botón Eliminar Ítem */
+.btn-delete-item {
+    background: transparent;
+    color: #ef4444;
+    border: none;
+    cursor: pointer;
+    font-size: 16px;
+    opacity: 0.6;
+    transition: opacity 0.2s;
+    padding: 2px;
+}
+
+.btn-delete-item:hover {
+    opacity: 1;
+}
+
+/* Pie de Página (Totales y Nota) */
+.sheet-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    margin-bottom: 20px;
+}
+
+.footer-left {
+    flex: 1;
+}
+
+.signature-box {
+    width: 180px;
+    text-align: center;
+    margin-top: 40px;
+}
+
+.signature-box p {
+    font-size: 9.5px;
+    font-weight: 600;
+    color: #475569;
+    margin-bottom: 30px;
+}
+
+.signature-line {
+    border-bottom: 1px solid #1c3d5a;
+}
+
+.footer-right {
+    width: 250px;
+}
+
+.totals-table {
+    width: 100%;
+    border-collapse: collapse;
+    border: 1px solid #1c3d5a;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.totals-table td {
+    padding: 6px 10px;
+    font-size: 11px;
+    border-bottom: 1px solid #e2e8f0;
+}
+
+.totals-table tr:last-child td {
+    border-bottom: none;
+}
+
+.totals-label {
+    text-align: left;
+    font-weight: 600;
+    color: #475569;
+}
+
+.totals-val {
+    text-align: right;
+    font-weight: 700;
+    color: #1e293b;
+}
+
+.grand-total-row {
+    background: #f8fafc;
+}
+
+.grand-total-row td {
+    font-size: 12.5px;
+    font-weight: 800;
+    color: #1e3a8a;
+    border-top: 1.5px solid #1c3d5a;
+}
+
+.sheet-bottom-note {
+    border-top: 1px solid #cbd5e1;
+    padding-top: 8px;
+    font-size: 8.5px;
+    color: #64748b;
+    line-height: 1.4;
+}
+
+.sheet-bottom-note p {
+    margin-bottom: 4px;
+}
+
+.sheet-bottom-note p:last-child {
+    margin-bottom: 0;
+}
+
+.legal-print-info {
+    font-style: italic;
+    color: #94a3b8;
+}
+
+/* ==========================================================================
+   DIRECTIVAS DE IMPRESIÓN Y EXPORTACIÓN A PDF (@media print)
+   ========================================================================== */
+@media print {
+    /* 1. Ocultar completamente la interfaz del Dashboard web */
+    body {
+        background-color: #ffffff !important;
+        color: #000000 !important;
+    }
+    
+    .control-panel {
+        display: none !important;
+    }
+    
+    .preview-area {
+        padding: 0 !important;
+        background: #ffffff !important;
+        overflow: visible !important;
+        height: auto !important;
+    }
+    
+    .no-print {
+        display: none !important;
+    }
+
+    /* 2. Ajustar la hoja para que ocupe el tamaño completo */
+    .printable-sheet {
+        box-shadow: none !important;
+        border-radius: 0 !important;
+        padding: 0.3in 0.3in 0 0.3in !important;
+        width: 100% !important;
+        height: auto !important;
+        min-height: auto !important;
+        overflow: visible !important;
+    }
+
+    /* Forzar fondo de colores de impresión */
+    .doc-title-box {
+        background: #f1f5f9 !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    
+    .grand-total-row {
+        background: #f8fafc !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    
+    /* Configuración de página */
+    @page {
+        size: letter;
+        margin: 0;
+    }
+}
