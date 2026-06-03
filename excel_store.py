@@ -1507,8 +1507,11 @@ def generate_premium_report_excel(
         cell = ws.cell(row=current_row, column=col)
         if c_idx in sum_cols:
             col_letter = get_column_letter(col)
-            formula = f"=SUM({col_letter}13:{col_letter}{current_row - 1})"
-            cell.value = formula
+            if current_row - 1 >= 13:
+                formula = f"=SUM({col_letter}13:{col_letter}{current_row - 1})"
+                cell.value = formula
+            else:
+                cell.value = 0.0
             cell.number_format = '#,##0.00'
             cell.font = font_totals
             cell.alignment = Alignment(horizontal="right", vertical="center")
