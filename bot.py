@@ -2852,6 +2852,168 @@ async def _send_reportes_async_workflow(
                 pass
 
 
+async def _send_reportes_telegram_async(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    year: int,
+    month: int,
+    fortnight: int,
+    status_msg,
+) -> None:
+    from .tributario_engine import get_fortnight_range
+    import tempfile
+    
+    start_date, end_date = get_fortnight_range(year, month, fortnight)
+    
+    # 1. Generar datos y reportes quincenales
+    records = excel_store.retenciones_by_document_date(
+        config.EXCEL_PATH,
+        date_from=start_date,
+        date_to=end_date,
+    )
+    
+    temp_files: list[Path] = []
+    attachments: list[Path] = []
+    
+    try:
+        month_names = {
+            1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+            7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
+        }
+        period_str = f"Q{fortnight} - {month_names.get(month, str(month))} / {year}"
+
+        # 1. Excel de Retenciones Recibidas
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+            xls_path = Path(tmp.name)
+            temp_files.append(xls_path)
+        ret_headers = ["#", "Fecha Emisión", "Nro Comprobante", "Cliente RIF", "Factura Afectada", "Control Factura", "Base (Bs)", "IVA Retenido (Bs)"]
+        ret_rows = []
+        for idx, rec in enumerate(records):
+            ret_rows.append([
+                idx + 1,
+                rec.fecha_emision.strftime("%d/%m/%Y"),
+                rec.numero_comprobante,
+                rec.rif,
+                rec.numeros_facturas,
+                rec.controles_facturas,
+                float(rec.base_imponible or 0),
+                float(rec.iva_retenido)
+            ])
+        excel_store.generate_premium_report_excel(
+            xls_path,
+            title="Resumen Quincenal de Retenciones de IVA Recibidas",
+            period_str=period_str,
+            headers=ret_headers,
+            rows=ret_rows,
+            numeric_cols=[6, 7],
+            sum_cols=[6, 7]
+        )
+        prof_xls = xls_path.with_name(f"RETENCIONES-RECIBIDAS-Q{fortnight}-{month}-{year}.xlsx")
+        xls_path.rename(prof_xls)
+        attachments.append(prof_xls)
+        temp_files.append(prof_xls)
+        
+        # 2. Excel de Facturas Recibidas / Compras con Retención Emitida
+        purchases_rows = excel_store.load_purchases_by_date_range(
+            config.RETENCIONES_EMITIDAS_DIR,
+            date_from=start_date,
+            date_to=end_date
+        )
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+            purchases_xls_path = Path(tmp.name)
+            temp_files.append(purchases_xls_path)
+        excel_store.generate_premium_report_excel(
+            purchases_xls_path,
+            title="Resumen Quincenal de Facturas Recibidas (Compras)",
+            period_str=period_str,
+            headers=["#", "Fecha", "Correlativo", "Proveedor", "RIF", "Nro Factura", "Nro Control", "Base (Bs)", "IVA (Bs)", "Monto (Bs)", "Retención (Bs)"],
+            rows=purchases_rows,
+            numeric_cols=[7, 8, 9, 10],
+            sum_cols=[7, 8, 9, 10]
+        )
+        prof_purchases_xls = purchases_xls_path.with_name(f"FACTURAS-RECIBIDAS-Q{fortnight}-{month}-{year}.xlsx")
+        purchases_xls_path.rename(prof_purchases_xls)
+        attachments.append(prof_purchases_xls)
+        temp_files.append(prof_purchases_xls)
+
+        # 3. Excel de Facturas Emitidas / Ventas
+        sales_rows = excel_store.load_sales_by_date_range(
+            config.FACTURAS_EMITIDAS_PATH,
+            date_from=start_date,
+            date_to=end_date
+        )
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+            sales_xls_path = Path(tmp.name)
+            temp_files.append(sales_xls_path)
+        excel_store.generate_premium_report_excel(
+            sales_xls_path,
+            title="Resumen Quincenal de Facturas Emitidas (Ventas)",
+            period_str=period_str,
+            headers=["#", "Fecha", "Nro Factura", "Cliente", "RIF", "Base (Bs)", "IVA (Bs)", "Monto (Bs)"],
+            rows=sales_rows,
+            numeric_cols=[5, 6, 7],
+            sum_cols=[5, 6, 7]
+        )
+        prof_sales_xls = sales_xls_path.with_name(f"FACTURAS-EMITIDAS-Q{fortnight}-{month}-{year}.xlsx")
+        sales_xls_path.rename(prof_sales_xls)
+        attachments.append(prof_sales_xls)
+        temp_files.append(prof_sales_xls)
+
+        # 4. Excel de Reportes Z / Ventas Diarias
+        z_rows = excel_store.load_reportes_z_by_date_range(
+            config.REPORTES_Z_PATH,
+            date_from=start_date,
+            date_to=end_date
+        )
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+            z_xls_path = Path(tmp.name)
+            temp_files.append(z_xls_path)
+        excel_store.generate_premium_report_excel(
+            z_xls_path,
+            title="Resumen Quincenal de Cierres Z (Ventas Diarias)",
+            period_str=period_str,
+            headers=["#", "Fecha", "Nro Reporte Z", "Subtotal (Bs)", "Exento (Bs)", "Base (Bs)", "IVA (Bs)", "Total (Bs)"],
+            rows=z_rows,
+            numeric_cols=[3, 4, 5, 6, 7],
+            sum_cols=[3, 4, 5, 6, 7]
+        )
+        prof_z_xls = z_xls_path.with_name(f"REPORTES-Z-Q{fortnight}-{month}-{year}.xlsx")
+        z_xls_path.rename(prof_z_xls)
+        attachments.append(prof_z_xls)
+        temp_files.append(prof_z_xls)
+            
+        # 5. Enviar cada archivo por Telegram
+        for path in attachments:
+            with open(path, "rb") as f:
+                await context.bot.send_document(
+                    chat_id=config.ALLOWED_USER_ID,
+                    document=f,
+                    filename=path.name,
+                    caption=f"📊 Reporte: {path.name}"
+                )
+                
+        # Actualizar estado en Telegram
+        await status_msg.edit_text(
+            f"✅ *¡Reportes quincenales generados y enviados!*\n\n"
+            f"Se enviaron los 4 archivos Excel de la *Quincena {fortnight}* del mes *{month}/{year}* directamente a este chat.",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.exception("Error al generar y enviar reportes por Telegram")
+        await status_msg.edit_text(
+            f"❌ *Error al generar los reportes*\n\n"
+            f"• *Detalle del error:* `{e!s}`",
+            parse_mode="Markdown"
+        )
+    finally:
+        # Eliminar archivos temporales creados para evitar fugas de espacio en disco
+        for path in temp_files:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
 def _generate_short_summary(report: dict[str, object]) -> str:
     month_names = {
         1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun",
@@ -2983,6 +3145,9 @@ def _tributos_keyboard(year: int, month: int, fortnight: int, report_text: str =
         ])
         
     keyboard.extend([
+        [
+            InlineKeyboardButton("📥 Descargar Reportes (Excel)", callback_data=f"tributos_download_{year}_{month}_{fortnight}")
+        ],
         [
             InlineKeyboardButton("📤 Enviar Reportes por Correo (SMTP)", callback_data=f"tributos_sendemail_{year}_{month}_{fortnight}")
         ],
@@ -3605,6 +3770,18 @@ async def handle_tributos_callback(
         text = "📅 *Selecciona la quincena y el mes que deseas consultar:*"
         kb = _months_selection_keyboard()
         await msg.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        
+    elif data.startswith("tributos_download_"):
+        parts = data.split("_")
+        y = int(parts[2])
+        m = int(parts[3])
+        f = int(parts[4])
+        
+        status_msg = await msg.reply_text(
+            f"⏳ *Generando los 4 reportes quincenales en formato Excel...*",
+            parse_mode="Markdown"
+        )
+        asyncio.create_task(_send_reportes_telegram_async(update, context, y, m, f, status_msg))
         
     elif data.startswith("tributos_sendemail_"):
         parts = data.split("_")
