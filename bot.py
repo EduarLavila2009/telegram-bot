@@ -1019,7 +1019,6 @@ SYNC_FILES = {
 }
 
 def get_sync_file_path(key: str) -> Path | None:
-    import config
     if key == "reten_rec":
         return config.EXCEL_PATH
     elif key == "facturas_recibidas":
@@ -1034,7 +1033,6 @@ _last_mtime_cache = {}
 PIN_PREFIX = "[SUFEVICA_BACKUP_STATE] "
 
 async def _get_pinned_state(bot) -> dict:
-    import config
     import json
     try:
         chat = await bot.get_chat(chat_id=config.ALLOWED_USER_ID)
@@ -1046,7 +1044,6 @@ async def _get_pinned_state(bot) -> dict:
     return {}
 
 async def _save_pinned_state(bot, state: dict) -> None:
-    import config
     import json
     text = f"{PIN_PREFIX}{json.dumps(state)}"
     try:
@@ -1068,7 +1065,6 @@ async def _save_pinned_state(bot, state: dict) -> None:
 
 async def check_and_sync_files(context: ContextTypes.DEFAULT_TYPE) -> None:
     import os
-    import config
     changed = False
     current_state = await _get_pinned_state(context.bot)
     
