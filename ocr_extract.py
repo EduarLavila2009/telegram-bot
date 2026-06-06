@@ -101,3 +101,154 @@ def extract_from_image(image: Image.Image) -> Extracted:
         iva_retenido=_safe_str(data.get("iva_retenido")),
         raw_text=_safe_str(data.get("raw_text")) or response_text,
     )
+
+
+import re
+from .factura_compra_parse import FacturaCompraParsed
+
+INVOICE_PROMPT = """
+Analiza esta imagen de una factura de compra (proveedor emitiendo a SUFEVICA/Suministros Ferreteros Vittoria).
+Devuelve UNICAMENTE un JSON valido con estas claves exactas:
+- tipo_documento (ej: "Factura recibida / compra", "Nota de Credito", "Nota de Debito")
+- fecha_emision (formato DD/MM/YYYY)
+- fecha_vencimiento (formato DD/MM/YYYY o vacio "")
+- numero_documento (numero de factura)
+- numero_control (numero de control de factura)
+- proveedor (nombre o razon social del emisor)
+- proveedor_rif (RIF del emisor, ej: J-12345678-9)
+- proveedor_telefono (telefono del emisor si esta visible, o vacio "")
+- direccion_fiscal_proveedor (direccion del emisor si esta visible, o vacio "")
+- receptor (nombre o razon social del receptor, ej: SUMINISTROS FERRETEROS VITTORIA, C.A.)
+- receptor_rif (RIF del receptor, ej: J-40194130-3)
+- subtotal (monto subtotal en bolivares Bs, sin separadores de miles y con punto decimal, ej: 2000.00)
+- monto_exento (monto exento de IVA en bolivares Bs, ej: 0.00)
+- base_imponible (base imponible gravada en bolivares Bs, ej: 2000.00)
+- monto_iva (monto del IVA en bolivares Bs, ej: 320.00)
+- total (monto total en bolivares Bs, ej: 2320.00)
+- contribuyente_tipo (determina si el emisor es "Especial", "Ordinario" o "Formal" segun las leyendas de la factura, o vacio "")
+- tasa_cambio (tasa de cambio de la factura si esta en USD, o vacio "")
+
+Reglas:
+1) Todos los montos deben expresarse en Bolívares (Bs.). Si los montos en la imagen están expresados en dólares (USD) u otra moneda, busca la tasa de cambio oficial (Tasa BCV) impresa en la misma factura y realiza la conversión a Bolívares en el JSON resultante.
+2) Si un dato no aparece, usa cadena vacia "".
+3) No agregues texto explicativo fuera del JSON.
+4) Formato de montos: numerico sin comas ni puntos de miles (ej: 12500.50).
+"""
+
+ISLR_PROMPT = """
+Analiza esta imagen de un comprobante de retención de ISLR (Impuesto sobre la Renta) en Venezuela.
+Devuelve UNICAMENTE un JSON valido con estas claves exactas:
+- numero_comprobante (numero de comprobante de retencion)
+- fecha_emision (formato DD/MM/YYYY)
+- proveedor (nombre o razon social del proveedor/retenido)
+- proveedor_rif (RIF del proveedor/retenido, ej: J-12345678-9)
+- concepto_retencion (ej. "Honorarios Profesionales", "Servicios de Mantenimiento", "Fletes", "Publicidad", etc.)
+- numero_documento (numero de factura afectada)
+- numero_control (numero de control de la factura)
+- base_imponible (base imponible gravada en bolivares Bs, sin separadores de miles y con punto decimal, ej: 1000.00)
+- porcentaje_retencion (porcentaje aplicado, ej. 2.00 para 2%)
+- islr_retenido (monto del ISLR retenido en bolivares Bs, ej: 20.00)
+- total_factura (monto total de la factura en bolivares Bs, ej: 1160.00)
+
+Reglas:
+1) Todos los montos deben expresarse en Bolívares (Bs.). Si están en dólares, realiza la conversión utilizando la tasa de cambio del comprobante.
+2) Si un dato no aparece, usa cadena vacia "".
+3) No agregues texto explicativo fuera del JSON.
+4) Formato de montos: numerico sin comas ni puntos de miles (ej: 1000.00).
+"""
+
+CLASSIFY_PROMPT = """
+Analiza esta imagen comercial y clasifícala en una de las siguientes categorías exactas:
+- "factura" (si es una factura de compra, nota de entrega, presupuesto, etc.)
+- "retencion_iva" (si es un comprobante de retención de IVA del SENIAT)
+- "retencion_islr" (si es un comprobante de retención de ISLR / Impuesto sobre la Renta)
+- "desconocido" (si es cualquier otra cosa)
+
+Devuelve UNICAMENTE la palabra de la categoría correspondiente, en minúsculas y sin comillas.
+"""
+
+def classify_image_type(image: Image.Image) -> str:
+    if not config.GEMINI_API_KEY:
+        return "desconocido"
+
+    client = genai.Client(api_key=config.GEMINI_API_KEY)
+    image_bytes = _image_to_bytes(image)
+    response = client.models.generate_content(
+        model=config.GEMINI_MODEL,
+        contents=[
+            CLASSIFY_PROMPT,
+            genai.types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+        ],
+    )
+    result = _safe_str(getattr(response, "text", "")).strip().lower()
+    for cat in ("factura", "retencion_iva", "retencion_islr"):
+        if cat in result:
+            return cat
+    return "desconocido"
+
+def extract_invoice_from_image(image: Image.Image) -> FacturaCompraParsed:
+    if not config.GEMINI_API_KEY:
+        raise RuntimeError("Falta GEMINI_API_KEY en .env.")
+
+    client = genai.Client(api_key=config.GEMINI_API_KEY)
+    image_bytes = _image_to_bytes(image)
+    response = client.models.generate_content(
+        model=config.GEMINI_MODEL,
+        contents=[
+            INVOICE_PROMPT,
+            genai.types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+        ],
+    )
+    response_text = _safe_str(getattr(response, "text", ""))
+    data = _extract_json_payload(response_text)
+
+    return FacturaCompraParsed(
+        tipo_documento=_safe_str(data.get("tipo_documento")) or "Factura recibida / compra",
+        fecha_emision=_safe_str(data.get("fecha_emision")),
+        fecha_vencimiento=_safe_str(data.get("fecha_vencimiento")),
+        numero_documento=_safe_str(data.get("numero_documento")),
+        numero_control=_safe_str(data.get("numero_control")),
+        proveedor=_safe_str(data.get("proveedor")),
+        proveedor_rif=_safe_str(data.get("proveedor_rif")),
+        proveedor_telefono=_safe_str(data.get("proveedor_telefono")),
+        direccion_fiscal_proveedor=_safe_str(data.get("direccion_fiscal_proveedor")),
+        receptor=_safe_str(data.get("receptor")),
+        receptor_rif=_safe_str(data.get("receptor_rif")),
+        subtotal=_safe_str(data.get("subtotal")),
+        monto_exento=_safe_str(data.get("monto_exento")) or "0.00",
+        base_imponible=_safe_str(data.get("base_imponible")),
+        monto_iva=_safe_str(data.get("monto_iva")),
+        total=_safe_str(data.get("total")),
+        contribuyente_tipo=_safe_str(data.get("contribuyente_tipo")),
+        tasa_cambio=_safe_str(data.get("tasa_cambio")),
+    )
+
+def extract_islr_from_image(image: Image.Image) -> dict:
+    if not config.GEMINI_API_KEY:
+        raise RuntimeError("Falta GEMINI_API_KEY en .env.")
+
+    client = genai.Client(api_key=config.GEMINI_API_KEY)
+    image_bytes = _image_to_bytes(image)
+    response = client.models.generate_content(
+        model=config.GEMINI_MODEL,
+        contents=[
+            ISLR_PROMPT,
+            genai.types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+        ],
+    )
+    response_text = _safe_str(getattr(response, "text", ""))
+    data = _extract_json_payload(response_text)
+
+    return {
+        "numero_comprobante": _safe_str(data.get("numero_comprobante")),
+        "fecha_emision": _safe_str(data.get("fecha_emision")),
+        "proveedor": _safe_str(data.get("proveedor")),
+        "proveedor_rif": _safe_str(data.get("proveedor_rif")),
+        "concepto_retencion": _safe_str(data.get("concepto_retencion")),
+        "numero_documento": _safe_str(data.get("numero_documento")),
+        "numero_control": _safe_str(data.get("numero_control")),
+        "base_imponible": _safe_str(data.get("base_imponible")),
+        "porcentaje_retencion": _safe_str(data.get("porcentaje_retencion")),
+        "islr_retenido": _safe_str(data.get("islr_retenido")),
+        "total_factura": _safe_str(data.get("total_factura")),
+    }

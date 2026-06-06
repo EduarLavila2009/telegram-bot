@@ -175,6 +175,8 @@ class FacturaCompraParsed:
     base_imponible: str
     monto_iva: str
     total: str
+    contribuyente_tipo: str = ""
+    tasa_cambio: str = ""
 
 
 def parse_factura_compra_text(text: str) -> FacturaCompraParsed | None:

@@ -346,6 +346,54 @@ def _parse_retencion_entry_request(text: str) -> dict[str, str] | None:
     return data
 
 
+def _parse_retencion_islr_entry_request(text: str) -> dict[str, str] | None:
+    t = text.strip()
+    t_norm = _normalize_text(t)
+    if "retencion islr" not in t_norm and "retenciones islr" not in t_norm and "retencion de islr" not in t_norm:
+        return None
+    data = {
+        "fecha_emision": _extract_labeled_value(t, ("fecha_emision", "fecha emision", "fecha")),
+        "numero_comprobante": _extract_labeled_value(t, ("numero_comprobante", "nro_comprobante", "nro comprobante", "comprobante")),
+        "proveedor": _extract_labeled_value(t, ("proveedor", "razon_social", "razon social")),
+        "proveedor_rif": _extract_labeled_value(t, ("rif", "proveedor_rif")),
+        "concepto_retencion": _extract_labeled_value(t, ("concepto_retencion", "concepto retencion", "concepto")),
+        "numero_documento": _extract_labeled_value(t, ("numero_documento", "numero_factura", "numero factura", "nro factura", "factura")),
+        "numero_control": _extract_labeled_value(t, ("numero_control", "control")),
+        "base_imponible": _extract_labeled_value(t, ("base_imponible", "base imponible", "base")),
+        "porcentaje_retencion": _extract_labeled_value(t, ("porcentaje_retencion", "porcentaje retencion", "tasa", "porcentaje", "alicuota")),
+        "islr_retenido": _extract_labeled_value(t, ("islr_retenido", "islr retenido", "retenido", "monto retenido")),
+        "total_factura": _extract_labeled_value(t, ("total_factura", "total factura", "total")),
+    }
+    required = ("fecha_emision", "numero_comprobante", "proveedor_rif", "islr_retenido")
+    if any(not data[k] for k in required):
+        return None
+    return data
+
+
+def _parse_retencion_islr_from_any_text(text: str) -> dict[str, str] | None:
+    t = text.strip()
+    t_norm = _normalize_text(t)
+    if "islr" not in t_norm:
+        return None
+    data = {
+        "fecha_emision": _extract_labeled_value_eol(t, ("fecha_emision", "fecha emision", "fecha de emision", "fecha")),
+        "numero_comprobante": _extract_labeled_value_eol(t, ("numero_comprobante", "nro comprobante", "comprobante")),
+        "proveedor": _extract_labeled_value_eol(t, ("proveedor", "razon social")),
+        "proveedor_rif": _extract_labeled_value_eol(t, ("rif", "proveedor_rif")),
+        "concepto_retencion": _extract_labeled_value_eol(t, ("concepto retencion", "concepto")),
+        "numero_documento": _extract_labeled_value_eol(t, ("numero_documento", "nro factura", "factura")),
+        "numero_control": _extract_labeled_value_eol(t, ("numero_control", "control")),
+        "base_imponible": _extract_labeled_value_eol(t, ("base_imponible", "base")),
+        "porcentaje_retencion": _extract_labeled_value_eol(t, ("porcentaje retencion", "porcentaje", "tasa")),
+        "islr_retenido": _extract_labeled_value_eol(t, ("islr_retenido", "islr retenido", "retenido")),
+        "total_factura": _extract_labeled_value_eol(t, ("total factura", "total")),
+    }
+    required = ("fecha_emision", "numero_comprobante", "proveedor_rif", "islr_retenido")
+    if any(not data[k] for k in required):
+        return None
+    return data
+
+
 def _parse_retenciones_report_request(
     text: str,
 ) -> tuple[date, date, str] | None:
@@ -1830,6 +1878,49 @@ async def _process_intent(
     if emit_docs is not None:
         await _start_emitir_retencion_flow(update, context, emit_docs)
         return
+    # Registrar automáticamente si el texto tiene formato de retención de ISLR
+    islr_data = _parse_retencion_islr_entry_request(text)
+    if islr_data is None:
+        islr_data = _parse_retencion_islr_from_any_text(text)
+    if islr_data is not None:
+        try:
+            emission_date = _parse_user_date(islr_data["fecha_emision"]) or date.today()
+            monthly_path = excel_store.monthly_retencion_islr_path(config.RETENCIONES_ISLR_DIR, emission_date)
+            
+            base_val = excel_store.parse_amount_ves_string(islr_data["base_imponible"]) or Decimal("0")
+            rate_val = excel_store.parse_amount_ves_string(islr_data["porcentaje_retencion"]) or Decimal("0")
+            if rate_val > 1:
+                rate_val = rate_val / 100
+            islr_val = excel_store.parse_amount_ves_string(islr_data["islr_retenido"]) or Decimal("0")
+            total_val = excel_store.parse_amount_ves_string(islr_data["total_factura"]) or Decimal("0")
+            
+            excel_store.append_retencion_islr(
+                monthly_path,
+                numero_comprobante=islr_data["numero_comprobante"],
+                fecha_emision=islr_data["fecha_emision"],
+                periodo_fiscal=_periodo_fiscal(emission_date),
+                proveedor=islr_data["proveedor"],
+                proveedor_rif=islr_data["proveedor_rif"],
+                concepto_retencion=islr_data["concepto_retencion"],
+                numero_documento=islr_data["numero_documento"],
+                numero_control=islr_data["numero_control"],
+                base_imponible=base_val,
+                porcentaje_retencion=rate_val,
+                islr_retenido=islr_val,
+                total_factura=total_val,
+            )
+            await _notify_same_source_channel(
+                update,
+                context,
+                f"✅ Retención de ISLR Nro {islr_data['numero_comprobante']} registrada correctamente en {monthly_path.name}.",
+            )
+        except Exception as e:
+            await msg.reply_text(
+                "No pude registrar la retención de ISLR en Excel.\n"
+                f"Detalle: {e!s}"
+            )
+        return
+
     ret_data = _parse_retencion_entry_request(text)
     # Registrar automáticamente si el texto ya contiene los campos en cualquier chat (privado o grupal).
     if ret_data is None:
@@ -2411,6 +2502,571 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "• Si ves «Acceso no autorizado», envia /mi_id y revisa .env.",
             reply_markup=_main_keyboard(),
         )
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if not msg:
+        return
+    if not _allowed(update):
+        await _deny(update)
+        return
+    if not msg.photo:
+        return
+
+    photo = msg.photo[-1]
+    status_msg = await msg.reply_text("📥 *Procesando imagen con IA (Gemini)...*", parse_mode="Markdown")
+    
+    suffix = ".jpg"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+        
+    try:
+        tg_file = await context.bot.get_file(photo.file_id)
+        await tg_file.download_to_drive(tmp_path)
+        
+        from PIL import Image
+        from . import ocr_extract
+        
+        img = Image.open(tmp_path)
+        category = ocr_extract.classify_image_type(img)
+        logger.info("Imagen clasificada como: %s", category)
+        
+        if category == "factura":
+            fc = ocr_extract.extract_invoice_from_image(img)
+            rif_valido = tributario_engine.validar_rif_venezolano(fc.proveedor_rif)
+            
+            concepto_sugerido = fc.tipo_documento or "Prestación de Servicios en General"
+            alicuota_sugerida = tributario_engine.obtener_alicuota_islr_sugerida(concepto_sugerido)
+            
+            context.user_data["pending_ocr_invoice"] = {
+                "tipo_documento": fc.tipo_documento,
+                "fecha_emision": fc.fecha_emision,
+                "fecha_vencimiento": fc.fecha_vencimiento,
+                "numero_documento": fc.numero_documento,
+                "numero_control": fc.numero_control,
+                "proveedor": fc.proveedor,
+                "proveedor_rif": fc.proveedor_rif,
+                "proveedor_telefono": fc.proveedor_telefono,
+                "direccion_fiscal_proveedor": fc.direccion_fiscal_proveedor,
+                "receptor": fc.receptor,
+                "receptor_rif": fc.receptor_rif,
+                "subtotal": fc.subtotal,
+                "monto_exento": fc.monto_exento,
+                "base_imponible": fc.base_imponible,
+                "monto_iva": fc.monto_iva,
+                "total": fc.total,
+                "contribuyente_tipo": fc.contribuyente_tipo,
+                "tasa_cambio": fc.tasa_cambio,
+                "rif_valido": rif_valido,
+                "islr_rate": str(alicuota_sugerida),
+                "islr_concept": "Servicios en General (Jurídicos: 2%)" if alicuota_sugerida == Decimal("0.02") else "Honorarios Profesionales / Fletes (Jurídicos: 3%)" if alicuota_sugerida == Decimal("0.03") else "Publicidad, Propaganda y Comisiones (5%)" if alicuota_sugerida == Decimal("0.05") else "Compra de Mercancía / No sujeto"
+            }
+            
+            await _send_ocr_invoice_card(update, context, status_msg)
+            
+        elif category == "retencion_iva":
+            ret_iva = ocr_extract.extract_from_image(img)
+            context.user_data["pending_ocr_ret_iva"] = {
+                "fecha_emision": ret_iva.fecha_emision,
+                "numero_comprobante": ret_iva.numero_comprobante,
+                "rif": ret_iva.rif,
+                "fechas_facturas": ret_iva.fechas_facturas,
+                "numeros_facturas": ret_iva.numeros_facturas,
+                "controles_facturas": ret_iva.controles_facturas,
+                "total_compra_con_iva": ret_iva.total_compra_iva,
+                "base_imponible": ret_iva.base_imponible,
+                "iva_retenido": ret_iva.iva_retenido,
+                "raw_text": ret_iva.raw_text
+            }
+            await _send_ocr_ret_iva_card(update, context, status_msg)
+            
+        elif category == "retencion_islr":
+            ret_islr = ocr_extract.extract_islr_from_image(img)
+            context.user_data["pending_ocr_ret_islr"] = ret_islr
+            await _send_ocr_ret_islr_card(update, context, status_msg)
+            
+        else:
+            saved_path = Path(tempfile.gettempdir()) / f"unknown_{photo.file_id}.jpg"
+            import shutil
+            shutil.copy(tmp_path, saved_path)
+            context.user_data["pending_unknown_image"] = str(saved_path)
+            
+            kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📄 Es Factura", callback_data="ocr_force_factura"),
+                    InlineKeyboardButton("📥 Es Retención IVA", callback_data="ocr_force_ret_iva"),
+                ],
+                [
+                    InlineKeyboardButton("💸 Es Retención ISLR", callback_data="ocr_force_ret_islr"),
+                    InlineKeyboardButton("❌ Cancelar", callback_data="ocr_cancel_photo"),
+                ]
+            ])
+            await status_msg.edit_text(
+                "❓ *No pude determinar el tipo de documento automáticamente.*\n\n"
+                "Por favor, selecciona qué tipo de documento es para procesarlo:",
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+            
+    except Exception as e:
+        logger.exception("Error al procesar foto con OCR")
+        await status_msg.edit_text(
+            f"❌ *Error al procesar la imagen con OCR:*\n`{e!s}`",
+            parse_mode="Markdown"
+        )
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+async def _send_ocr_invoice_card(update: Update, context: ContextTypes.DEFAULT_TYPE, msg_to_edit=None) -> None:
+    pending = context.user_data.get("pending_ocr_invoice")
+    if not pending:
+        return
+        
+    rif_status = "✅ Válido" if pending["rif_valido"] else "❌ INVÁLIDO (Módulo 11)"
+    contrib_status = pending["contribuyente_tipo"] or "No especificado"
+    
+    base_val = Decimal("0")
+    try:
+        base_val = Decimal(pending["base_imponible"])
+    except Exception:
+        pass
+    rate_val = Decimal(pending["islr_rate"])
+    islr_retenido_est = (base_val * rate_val).quantize(Decimal("0.01"))
+    
+    text = (
+        f"📄 *FACTURA DE COMPRA EXTRAÍDA* 📄\n\n"
+        f"🏢 *Proveedor:* {pending['proveedor'] or '—'}\n"
+        f"🆔 *RIF Proveedor:* `{pending['proveedor_rif'] or '—'}` ({rif_status})\n"
+        f"👤 *Contribuyente:* {contrib_status}\n"
+        f"📅 *Fecha Emisión:* {pending['fecha_emision'] or '—'}\n"
+        f"🔢 *Factura Nro:* `{pending['numero_documento'] or '—'}`\n"
+        f"🎛️ *Nro Control:* `{pending['numero_control'] or '—'}`\n\n"
+        f"-----------------------------------------\n"
+        f"💵 *Subtotal:* {pending['subtotal'] or '0.00'} Bs\n"
+        f"ex *Monto Exento:* {pending['monto_exento'] or '0.00'} Bs\n"
+        f"💰 *Base Imponible:* {pending['base_imponible'] or '0.00'} Bs\n"
+        f"⚡ *IVA (16%):* {pending['monto_iva'] or '0.00'} Bs\n"
+        f"💸 *Total Factura:* {pending['total'] or '0.00'} Bs\n"
+    )
+    if pending['tasa_cambio']:
+        text += f"💱 *Tasa Cambio:* {pending['tasa_cambio']} Bs/$\n"
+        
+    text += (
+        f"-----------------------------------------\n"
+        f"✍️ *Retención de ISLR sugerida:*\n"
+        f" 🔸 *Concepto:* {pending['islr_concept']}\n"
+        f" 🔸 *Alícuota:* {(rate_val * 100):.1f}%\n"
+        f" 👉 *ISLR Retenido Estimado:* `{excel_store._format_monto_ves(islr_retenido_est)}` Bs\n\n"
+        f"👇 *Confirma para guardar o ajusta la alícuota de ISLR:*"
+    )
+    
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Confirmar y Guardar", callback_data="ocr_confirm_invoice"),
+        ],
+        [
+            InlineKeyboardButton("ISLR: 0%", callback_data="ocr_islr_set_0.00"),
+            InlineKeyboardButton("ISLR: 2%", callback_data="ocr_islr_set_0.02"),
+            InlineKeyboardButton("ISLR: 3%", callback_data="ocr_islr_set_0.03"),
+            InlineKeyboardButton("ISLR: 5%", callback_data="ocr_islr_set_0.05"),
+        ],
+        [
+            InlineKeyboardButton("❌ Cancelar", callback_data="ocr_cancel_photo"),
+        ]
+    ])
+    
+    if msg_to_edit:
+        await msg_to_edit.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    else:
+        msg = update.effective_message
+        if msg:
+            await msg.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+
+
+async def _send_ocr_ret_iva_card(update: Update, context: ContextTypes.DEFAULT_TYPE, msg_to_edit=None) -> None:
+    pending = context.user_data.get("pending_ocr_ret_iva")
+    if not pending:
+        return
+        
+    text = (
+        f"📥 *COMPROBANTE RETENCIÓN IVA EXTRAÍDO* 📥\n\n"
+        f"🔢 *Nro Comprobante:* `{pending['numero_comprobante'] or '—'}`\n"
+        f"📅 *Fecha Emisión:* {pending['fecha_emision'] or '—'}\n"
+        f"🆔 *RIF Proveedor:* `{pending['rif'] or '—'}`\n"
+        f"🔢 *Facturas Afectadas:* `{pending['numeros_facturas'] or '—'}`\n"
+        f"🎛️ *Nro Controles:* `{pending['controles_facturas'] or '—'}`\n\n"
+        f"-----------------------------------------\n"
+        f"💵 *Total Compra:* {pending['total_compra_con_iva'] or '0.00'} Bs\n"
+        f"💰 *Base Imponible:* {pending['base_imponible'] or '0.00'} Bs\n"
+        f"💸 *IVA Retenido:* `{pending['iva_retenido'] or '0.00'}` Bs\n\n"
+        f"👇 *¿Deseas registrar este comprobante de retención recibido?*"
+    )
+    
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Confirmar y Guardar", callback_data="ocr_confirm_ret_iva"),
+            InlineKeyboardButton("❌ Cancelar", callback_data="ocr_cancel_photo")
+        ]
+    ])
+    
+    if msg_to_edit:
+        await msg_to_edit.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    else:
+        msg = update.effective_message
+        if msg:
+            await msg.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+
+
+async def _send_ocr_ret_islr_card(update: Update, context: ContextTypes.DEFAULT_TYPE, msg_to_edit=None) -> None:
+    pending = context.user_data.get("pending_ocr_ret_islr")
+    if not pending:
+        return
+        
+    text = (
+        f"💸 *COMPROBANTE RETENCIÓN ISLR EXTRAÍDO* 💸\n\n"
+        f"🔢 *Nro Comprobante:* `{pending['numero_comprobante'] or '—'}`\n"
+        f"📅 *Fecha Emisión:* {pending['fecha_emision'] or '—'}\n"
+        f"🏢 *Proveedor/Retenido:* {pending['proveedor'] or '—'}\n"
+        f"🆔 *RIF Proveedor:* `{pending['proveedor_rif'] or '—'}`\n"
+        f"✍️ *Concepto Retención:* {pending['concepto_retencion'] or '—'}\n"
+        f"🔢 *Factura Afectada:* `{pending['numero_documento'] or '—'}`\n"
+        f"🎛️ *Nro Control:* `{pending['numero_control'] or '—'}`\n\n"
+        f"-----------------------------------------\n"
+        f"💵 *Total Factura:* {pending['total_factura'] or '0.00'} Bs\n"
+        f"💰 *Base Imponible:* {pending['base_imponible'] or '0.00'} Bs\n"
+        f"📊 *Alícuota:* {pending['porcentaje_retencion'] or '0.00'}%\n"
+        f"💸 *ISLR Retenido:* `{pending['islr_retenido'] or '0.00'}` Bs\n\n"
+        f"👇 *¿Deseas registrar este comprobante de retención de ISLR?*"
+    )
+    
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Confirmar y Guardar", callback_data="ocr_confirm_ret_islr"),
+            InlineKeyboardButton("❌ Cancelar", callback_data="ocr_cancel_photo")
+        ]
+    ])
+    
+    if msg_to_edit:
+        await msg_to_edit.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    else:
+        msg = update.effective_message
+        if msg:
+            await msg.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+
+
+async def handle_ocr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    if not q:
+        return
+    await q.answer()
+    data = (q.data or "").strip()
+    msg = q.message
+    if not msg:
+        return
+        
+    if data == "ocr_cancel_photo":
+        context.user_data.pop("pending_ocr_invoice", None)
+        context.user_data.pop("pending_ocr_ret_iva", None)
+        context.user_data.pop("pending_ocr_ret_islr", None)
+        saved_path_str = context.user_data.pop("pending_unknown_image", None)
+        if saved_path_str:
+            try:
+                Path(saved_path_str).unlink(missing_ok=True)
+            except Exception:
+                pass
+        try:
+            await q.delete_message()
+        except Exception:
+            pass
+        await msg.reply_text("❌ Procesamiento de imagen cancelado.")
+        
+    elif data.startswith("ocr_islr_set_"):
+        pending = context.user_data.get("pending_ocr_invoice")
+        if not pending:
+            await msg.reply_text("Información de factura perdida.")
+            return
+        rate_str = data.replace("ocr_islr_set_", "")
+        pending["islr_rate"] = rate_str
+        rate_dec = Decimal(rate_str)
+        if rate_dec == Decimal("0.02"):
+            pending["islr_concept"] = "Servicios en General (Jurídicos: 2%)"
+        elif rate_dec == Decimal("0.03"):
+            pending["islr_concept"] = "Honorarios Profesionales / Fletes (Jurídicos: 3%)"
+        elif rate_dec == Decimal("0.05"):
+            pending["islr_concept"] = "Publicidad, Propaganda y Comisiones (5%)"
+        else:
+            pending["islr_concept"] = "Compra de Mercancía / No sujeto"
+            
+        await _send_ocr_invoice_card(update, context, msg_to_edit=msg)
+        
+    elif data.startswith("ocr_force_"):
+        saved_path_str = context.user_data.get("pending_unknown_image")
+        if not saved_path_str:
+            await msg.reply_text("No se encontró la imagen para re-procesar.")
+            return
+            
+        saved_path = Path(saved_path_str)
+        if not saved_path.exists():
+            await msg.reply_text("El archivo de imagen temporal ya no existe.")
+            return
+            
+        force_type = data.replace("ocr_force_", "")
+        await msg.edit_text(f"⏳ *Forzando procesamiento de imagen como {force_type.upper()}...*", parse_mode="Markdown")
+        
+        try:
+            from PIL import Image
+            from . import ocr_extract
+            img = Image.open(saved_path)
+            
+            if force_type == "factura":
+                fc = ocr_extract.extract_invoice_from_image(img)
+                rif_valido = tributario_engine.validar_rif_venezolano(fc.proveedor_rif)
+                concepto_sugerido = fc.tipo_documento or "Prestación de Servicios en General"
+                alicuota_sugerida = tributario_engine.obtener_alicuota_islr_sugerida(concepto_sugerido)
+                
+                context.user_data["pending_ocr_invoice"] = {
+                    "tipo_documento": fc.tipo_documento,
+                    "fecha_emision": fc.fecha_emision,
+                    "fecha_vencimiento": fc.fecha_vencimiento,
+                    "numero_documento": fc.numero_documento,
+                    "numero_control": fc.numero_control,
+                    "proveedor": fc.proveedor,
+                    "proveedor_rif": fc.proveedor_rif,
+                    "proveedor_telefono": fc.proveedor_telefono,
+                    "direccion_fiscal_proveedor": fc.direccion_fiscal_proveedor,
+                    "receptor": fc.receptor,
+                    "receptor_rif": fc.receptor_rif,
+                    "subtotal": fc.subtotal,
+                    "monto_exento": fc.monto_exento,
+                    "base_imponible": fc.base_imponible,
+                    "monto_iva": fc.monto_iva,
+                    "total": fc.total,
+                    "contribuyente_tipo": fc.contribuyente_tipo,
+                    "tasa_cambio": fc.tasa_cambio,
+                    "rif_valido": rif_valido,
+                    "islr_rate": str(alicuota_sugerida),
+                    "islr_concept": "Servicios en General (Jurídicos: 2%)" if alicuota_sugerida == Decimal("0.02") else "Honorarios Profesionales / Fletes (Jurídicos: 3%)" if alicuota_sugerida == Decimal("0.03") else "Publicidad, Propaganda y Comisiones (5%)" if alicuota_sugerida == Decimal("0.05") else "Compra de Mercancía / No sujeto"
+                }
+                context.user_data.pop("pending_unknown_image", None)
+                saved_path.unlink(missing_ok=True)
+                await _send_ocr_invoice_card(update, context, msg_to_edit=msg)
+                
+            elif force_type == "ret_iva":
+                ret_iva = ocr_extract.extract_from_image(img)
+                context.user_data["pending_ocr_ret_iva"] = {
+                    "fecha_emision": ret_iva.fecha_emision,
+                    "numero_comprobante": ret_iva.numero_comprobante,
+                    "rif": ret_iva.rif,
+                    "fechas_facturas": ret_iva.fechas_facturas,
+                    "numeros_facturas": ret_iva.numeros_facturas,
+                    "controles_facturas": ret_iva.controles_facturas,
+                    "total_compra_con_iva": ret_iva.total_compra_iva,
+                    "base_imponible": ret_iva.base_imponible,
+                    "iva_retenido": ret_iva.iva_retenido,
+                    "raw_text": ret_iva.raw_text
+                }
+                context.user_data.pop("pending_unknown_image", None)
+                saved_path.unlink(missing_ok=True)
+                await _send_ocr_ret_iva_card(update, context, msg_to_edit=msg)
+                
+            elif force_type == "ret_islr":
+                ret_islr = ocr_extract.extract_islr_from_image(img)
+                context.user_data["pending_ocr_ret_islr"] = ret_islr
+                context.user_data.pop("pending_unknown_image", None)
+                saved_path.unlink(missing_ok=True)
+                await _send_ocr_ret_islr_card(update, context, msg_to_edit=msg)
+                
+        except Exception as e:
+            logger.exception("Error al forzar clasificación de foto")
+            await msg.reply_text(f"❌ Error al procesar imagen forzada: {e!s}")
+            
+    elif data == "ocr_confirm_invoice":
+        pending = context.user_data.get("pending_ocr_invoice")
+        if not pending:
+            await msg.reply_text("No hay factura pendiente de confirmación.")
+            return
+            
+        try:
+            inserted = excel_store.append_factura_compra(
+                config.FACTURAS_RECIBIDAS_PATH,
+                tipo_documento=pending["tipo_documento"],
+                fecha_emision=pending["fecha_emision"],
+                fecha_vencimiento=pending["fecha_vencimiento"],
+                numero_documento=pending["numero_documento"],
+                numero_control=pending["numero_control"],
+                proveedor=pending["proveedor"],
+                proveedor_rif=pending["proveedor_rif"],
+                proveedor_telefono=pending["proveedor_telefono"],
+                direccion_fiscal_proveedor=pending["direccion_fiscal_proveedor"],
+                receptor=pending["receptor"],
+                receptor_rif=pending["receptor_rif"],
+                subtotal=pending["subtotal"],
+                monto_exento=pending["monto_exento"],
+                base_imponible=pending["base_imponible"],
+                monto_iva=pending["monto_iva"],
+                total=pending["total"],
+                texto_resumen="Registrado desde OCR de foto.",
+            )
+            
+            if not inserted:
+                await msg.reply_text(f"⚠️ La factura Nro {pending['numero_documento']} del proveedor {pending['proveedor']} ya se encuentra registrada.")
+                context.user_data.pop("pending_ocr_invoice", None)
+                try:
+                    await q.delete_message()
+                except Exception:
+                    pass
+                return
+                
+            await msg.reply_text(f"✅ Factura Nro {pending['numero_documento']} registrada con éxito en {config.FACTURAS_RECIBIDAS_PATH.name}.")
+            
+            rate_val = Decimal(pending["islr_rate"])
+            if rate_val > 0:
+                base_val = Decimal(pending["base_imponible"] or "0")
+                total_val = Decimal(pending["total"] or "0")
+                islr_retenido_est = (base_val * rate_val).quantize(Decimal("0.01"))
+                
+                emission_date = tributario_engine._parse_row_date(pending["fecha_emision"]) or date.today()
+                num_comp = excel_store.next_retencion_islr_number(config.RETENCIONES_ISLR_DIR, emission_date=emission_date)
+                periodo_fiscal = _periodo_fiscal(emission_date)
+                
+                monthly_path = excel_store.monthly_retencion_islr_path(config.RETENCIONES_ISLR_DIR, emission_date)
+                excel_store.append_retencion_islr(
+                    monthly_path,
+                    numero_comprobante=num_comp,
+                    fecha_emision=pending["fecha_emision"],
+                    periodo_fiscal=periodo_fiscal,
+                    proveedor=pending["proveedor"],
+                    proveedor_rif=pending["proveedor_rif"],
+                    concepto_retencion=pending["islr_concept"],
+                    numero_documento=pending["numero_documento"],
+                    numero_control=pending["numero_control"],
+                    base_imponible=base_val,
+                    porcentaje_retencion=rate_val,
+                    islr_retenido=islr_retenido_est,
+                    total_factura=total_val,
+                )
+                
+                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_pdf:
+                    pdf_path = Path(tmp_pdf.name)
+                    
+                try:
+                    excel_store.export_comprobante_islr_pdf(
+                        out_path=pdf_path,
+                        numero_comprobante=num_comp,
+                        fecha_emision=pending["fecha_emision"],
+                        periodo_fiscal=periodo_fiscal,
+                        proveedor=pending["proveedor"],
+                        proveedor_rif=pending["proveedor_rif"],
+                        concepto_retencion=pending["islr_concept"],
+                        base_imponible=base_val,
+                        porcentaje_retencion=rate_val,
+                        islr_retenido=islr_retenido_est,
+                        total_factura=total_val,
+                        numero_documento=pending["numero_documento"],
+                        numero_control=pending["numero_control"],
+                    )
+                    
+                    pdf_filename = f"COMPROBANTE_RETENCION_ISLR_{num_comp}.pdf"
+                    await msg.reply_document(
+                        document=str(pdf_path),
+                        filename=pdf_filename,
+                        caption=f"📄 *Comprobante Oficial de Retención de ISLR Nro {num_comp}* generado con éxito para el proveedor {pending['proveedor']}.",
+                        parse_mode="Markdown"
+                    )
+                finally:
+                    pdf_path.unlink(missing_ok=True)
+                    
+        except Exception as e:
+            logger.exception("Error al confirmar factura desde OCR")
+            await msg.reply_text(f"❌ Error al guardar la factura/retención: {e!s}")
+        finally:
+            context.user_data.pop("pending_ocr_invoice", None)
+            try:
+                await q.delete_message()
+            except Exception:
+                pass
+                
+    elif data == "ocr_confirm_ret_iva":
+        pending = context.user_data.get("pending_ocr_ret_iva")
+        if not pending:
+            await msg.reply_text("No hay retención de IVA pendiente.")
+            return
+            
+        try:
+            inserted = excel_store.append_record(
+                config.EXCEL_PATH,
+                fecha_emision=pending["fecha_emision"],
+                numero_comprobante=pending["numero_comprobante"],
+                rif=pending["rif"],
+                fechas_facturas=pending["fechas_facturas"],
+                numeros_facturas=pending["numeros_facturas"],
+                controles_facturas=pending["controles_facturas"],
+                total_compra_con_iva=pending["total_compra_con_iva"],
+                base_imponible=pending["base_imponible"],
+                iva_retenido=pending["iva_retenido"],
+                ocr_snippet=f"Comprobante IVA registrado por OCR: {pending['raw_text'][:200]}"
+            )
+            
+            if not inserted:
+                await msg.reply_text(f"⚠️ La retención de IVA Nro {pending['numero_comprobante']} ya se encuentra registrada.")
+            else:
+                await msg.reply_text(f"✅ Retención de IVA Nro {pending['numero_comprobante']} guardada con éxito en {config.EXCEL_PATH.name}.")
+                
+        except Exception as e:
+            logger.exception("Error al guardar retención IVA desde OCR")
+            await msg.reply_text(f"❌ Error al registrar retención IVA: {e!s}")
+        finally:
+            context.user_data.pop("pending_ocr_ret_iva", None)
+            try:
+                await q.delete_message()
+            except Exception:
+                pass
+                
+    elif data == "ocr_confirm_ret_islr":
+        pending = context.user_data.get("pending_ocr_ret_islr")
+        if not pending:
+            await msg.reply_text("No hay retención de ISLR pendiente.")
+            return
+            
+        try:
+            emission_date = tributario_engine._parse_row_date(pending["fecha_emision"]) or date.today()
+            monthly_path = excel_store.monthly_retencion_islr_path(config.RETENCIONES_ISLR_DIR, emission_date)
+            
+            base_val = excel_store.parse_amount_ves_string(pending["base_imponible"]) or Decimal("0")
+            rate_val = excel_store.parse_amount_ves_string(pending["porcentaje_retencion"]) or Decimal("0")
+            if rate_val > 1:
+                rate_val = rate_val / 100
+            islr_val = excel_store.parse_amount_ves_string(pending["islr_retenido"]) or Decimal("0")
+            total_val = excel_store.parse_amount_ves_string(pending["total_factura"]) or Decimal("0")
+            
+            excel_store.append_retencion_islr(
+                monthly_path,
+                numero_comprobante=pending["numero_comprobante"],
+                fecha_emision=pending["fecha_emision"],
+                periodo_fiscal=_periodo_fiscal(emission_date),
+                proveedor=pending["proveedor"],
+                proveedor_rif=pending["proveedor_rif"],
+                concepto_retencion=pending["concepto_retencion"],
+                numero_documento=pending["numero_documento"],
+                numero_control=pending["numero_control"],
+                base_imponible=base_val,
+                porcentaje_retencion=rate_val,
+                islr_retenido=islr_val,
+                total_factura=total_val,
+            )
+            await msg.reply_text(f"✅ Retención de ISLR Nro {pending['numero_comprobante']} registrada con éxito en {monthly_path.name}.")
+            
+        except Exception as e:
+            logger.exception("Error al guardar retención ISLR desde OCR")
+            await msg.reply_text(f"❌ Error al registrar retención ISLR: {e!s}")
+        finally:
+            context.user_data.pop("pending_ocr_ret_islr", None)
+            try:
+                await q.delete_message()
+            except Exception:
+                pass
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3161,6 +3817,9 @@ def format_tributos_report(report: dict[str, object]) -> str:
     ret_emi = report["retenciones_emitidas"]
     ret_emi_cnt = report["retenciones_emitidas_count"]
     
+    ret_islr = report.get("retenciones_islr_compras", Decimal("0"))
+    ret_islr_cnt = report.get("retenciones_islr_compras_count", 0)
+    
     iva_neto = report["iva_neto_pagar"]
     pago_iva = report["iva_neto_pagar_efectivo"]
     anticipo = report["anticipo_islr"]
@@ -3189,6 +3848,9 @@ def format_tributos_report(report: dict[str, object]) -> str:
         f"📤 *Retenciones de IVA a Enterar (Proveedores)*:\n"
         f" 🔸 *Retenido en Compras:* `{excel_store._format_monto_ves(ret_emi)}` Bs ({ret_emi_cnt} doc)\n"
         f"    _(Este monto se paga en su totalidad al SENIAT)_\n\n"
+        f"💸 *Retenciones de ISLR a Enterar (Proveedores)*:\n"
+        f" 🔸 *Retenido en Compras:* `{excel_store._format_monto_ves(ret_islr)}` Bs ({ret_islr_cnt} doc)\n"
+        f"    _(Este monto se paga al SENIAT por retenciones efectuadas)_\n\n"
         f"💸 *Anticipo de ISLR (1% sobre Ventas)*:\n"
         f" 🔸 *Base imponible:* {excel_store._format_monto_ves(v_base)} Bs\n"
         f" 👉 *Anticipo a pagar:* `{excel_store._format_monto_ves(anticipo)}` Bs\n\n"
@@ -3379,49 +4041,7 @@ def _format_iva_details(year: int, month: int, fortnight: int) -> str:
     return text
 
 
-def _format_islr_details(year: int, month: int, fortnight: int) -> str:
-    start_date, end_date = tributario_engine.get_fortnight_range(year, month, fortnight)
-    from .tributario_engine import _parse_row_date, ALICUOTA_ANTICIPO_ISLR
-    
-    ventas_list = []
-    for path_v in [config.FACTURAS_EMITIDAS_PATH, config.REPORTES_Z_PATH]:
-        if not path_v.exists():
-            continue
-        try:
-            wb = load_workbook(path_v, read_only=True, data_only=True)
-            ws = wb.active
-            headers = excel_store._headers_index(ws)
-            for row in ws.iter_rows(min_row=2, values_only=True):
-                if not row:
-                    continue
-                fecha_cell = excel_store._cell(row, headers, "Fecha_emision", None) or excel_store._cell(row, headers, "Fecha", None)
-                f_doc = _parse_row_date(fecha_cell)
-                if f_doc and start_date <= f_doc <= end_date:
-                    doc = str(excel_store._cell(row, headers, "Numero_reporte", None) or excel_store._cell(row, headers, "Numero_documento", "-"))
-                    base_val = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Base_imponible", None)) or Decimal("0")
-                    file_label = "Fact" if "EMITIDAS" in path_v.name else "RepZ"
-                    ventas_list.append(f"• {f_doc.strftime('%d/%m')} [{file_label} {doc}]: Base {excel_store._format_monto_ves(base_val)} Bs")
-            wb.close()
-        except Exception as e:
-            ventas_list.append(f"Error cargando ventas: {e}")
-            
-    v_base, _, _ = tributario_engine.get_sales_totals(start_date, end_date)
-    anticipo = v_base * ALICUOTA_ANTICIPO_ISLR
-    
-    text = f"💸 *DETALLE ANTICIPO ISLR* ({start_date.strftime('%d/%m/%Y')} - {end_date.strftime('%d/%m/%Y')})\n\n"
-    text += f"*Fórmula:* Base de Ventas x Alícuota ({(ALICUOTA_ANTICIPO_ISLR * 100):.0f}%)\n\n"
-    
-    text += "*📈 desglose de bases de ventas:*\n"
-    if ventas_list:
-        text += "\n".join(ventas_list) + "\n\n"
-    else:
-        text += "No hay ventas en este período.\n\n"
-        
-    text += f"💵 *Base total acumulada:* {excel_store._format_monto_ves(v_base)} Bs\n"
-    text += f"📊 *Alícuota anticipo:* {(ALICUOTA_ANTICIPO_ISLR * 100):.0f}%\n"
-    text += f"👉 *Monto del Anticipo ISLR a pagar:* `{excel_store._format_monto_ves(anticipo)}` Bs"
-    
-    return text
+
 
 
 async def handle_share_email_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3969,7 +4589,9 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(handle_cotizaciones_callback, pattern=r"^coti_curr_"))
     app.add_handler(CallbackQueryHandler(handle_share_email_callback, pattern=r"^share_email$"))
     app.add_handler(CallbackQueryHandler(handle_share_cancel_callback, pattern=r"^share_cancel$"))
+    app.add_handler(CallbackQueryHandler(handle_ocr_callback, pattern=r"^ocr_"))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     # Acepta texto normal y también caption de fotos/documentos.
     app.add_handler(MessageHandler((filters.TEXT | filters.CAPTION) & ~filters.COMMAND, handle_text))

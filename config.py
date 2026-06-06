@@ -149,3 +149,9 @@ RENDER_EXTERNAL_URL: str | None = os.environ.get("RENDER_EXTERNAL_URL") or None
 
 # RIF del Agente de Retención (nuestra empresa)
 EMITTER_RIF: str = os.environ.get("EMITTER_RIF", "J-40194130-3").strip()
+
+# Carpeta para libros mensuales de retenciones de ISLR
+RETENCIONES_ISLR_DIR = _resolve_path_env(
+    "RETENCIONES_ISLR_DIR",
+    "RETENCIONES-ISLR-EMITIDAS",
+)

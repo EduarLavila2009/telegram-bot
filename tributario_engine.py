@@ -231,6 +231,40 @@ def get_withholdings_issued_totals(start_date: date, end_date: date) -> tuple[De
     return total_ret, total_count
 
 
+def get_islr_withholdings_totals(start_date: date, end_date: date) -> tuple[Decimal, int]:
+    """
+    Calcula totales de ISLR retenido en compras a proveedores (Base Imponible, ISLR retenido, número de registros)
+    a partir de los Excels mensuales en RETENCIONES_ISLR_DIR.
+    """
+    total_islr = Decimal("0")
+    total_count = 0
+    base_dir = config.RETENCIONES_ISLR_DIR
+    if not base_dir.is_dir():
+        return total_islr, total_count
+
+    for path in base_dir.glob("RETEN-ISLR-*.xlsx"):
+        try:
+            wb = load_workbook(path, read_only=True, data_only=True)
+            ws = wb.active
+            headers = excel_store._headers_index(ws)
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not row:
+                    continue
+                fecha_cell = excel_store._cell(row, headers, "Fecha_emision", None)
+                fecha_doc = _parse_row_date(fecha_cell)
+                if fecha_doc is None or fecha_doc < start_date or fecha_doc > end_date:
+                    continue
+                ret_cell = excel_store._cell(row, headers, "ISLR_retenido", None)
+                ret_val = excel_store._parse_monto_cell(ret_cell) or Decimal("0")
+                total_islr += ret_val
+                total_count += 1
+            wb.close()
+        except Exception as e:
+            logger.exception("Error leyendo retenciones ISLR desde %s", path)
+
+    return total_islr, total_count
+
+
 def get_seniat_due_date(year: int, month: int, fortnight: int) -> date:
     """
     Calcula la fecha de declaración y pago del SENIAT para RIF terminado en 3.
@@ -258,16 +292,16 @@ def get_seniat_due_date(year: int, month: int, fortnight: int) -> date:
     CALENDARIO_Q2_2026 = {
         1: 16,  # Enero
         2: 12,  # Febrero
-        3: 4,   # Marzo
+        3: 16,  # Marzo
         4: 16,  # Abril
-        5: 7,   # Mayo
-        6: 10,  # Junio
-        7: 7,   # Julio
-        8: 5,   # Agosto
-        9: 2,   # Septiembre
-        10: 7,  # Octubre
-        11: 9,  # Noviembre
-        12: 11, # Diciembre
+        5: 14,  # Mayo
+        6: 15,  # Junio
+        7: 15,  # Julio
+        8: 14,  # Agosto
+        9: 15,  # Septiembre
+        10: 15, # Octubre
+        11: 16, # Noviembre
+        12: 15, # Diciembre
     }
 
     if fortnight == 1:
@@ -306,6 +340,9 @@ def get_compromiso_tributario_report(year: int, month: int, fortnight: int) -> d
     # 4. Retenciones Emitidas
     ret_emi, ret_emi_count = get_withholdings_issued_totals(start_date, end_date)
     
+    # 4b. Retenciones de ISLR a proveedores en compras
+    ret_islr_compras, ret_islr_compras_count = get_islr_withholdings_totals(start_date, end_date)
+    
     # 5. Cálculos netos de IVA por pagar
     # IVA a pagar = IVA Débito (Ventas) - IVA Crédito (Compras) - Retenciones Recibidas (Clientes)
     iva_neto = v_iva - c_iva - ret_rec
@@ -314,10 +351,10 @@ def get_compromiso_tributario_report(year: int, month: int, fortnight: int) -> d
     anticipo_islr = v_base * ALICUOTA_ANTICIPO_ISLR
     
     # 7. Total general de compromisos de la quincena
-    # IVA Neto + Retenciones Emitidas a Enterar + Anticipo de ISLR
+    # IVA Neto + Retenciones Emitidas a Enterar + Anticipo de ISLR + Retenciones ISLR
     # Nota: Si el IVA Neto es negativo (excedente), para el pago al fisco se toma como 0.00
     pago_iva = max(Decimal("0"), iva_neto)
-    total_pagos = pago_iva + ret_emi + anticipo_islr
+    total_pagos = pago_iva + ret_emi + anticipo_islr + ret_islr_compras
     
     # 8. Fecha límite del SENIAT
     due_date = get_seniat_due_date(year, month, fortnight)
@@ -339,6 +376,8 @@ def get_compromiso_tributario_report(year: int, month: int, fortnight: int) -> d
         "retenciones_recibidas_count": ret_rec_count,
         "retenciones_emitidas": ret_emi,
         "retenciones_emitidas_count": ret_emi_count,
+        "retenciones_islr_compras": ret_islr_compras,
+        "retenciones_islr_compras_count": ret_islr_compras_count,
         "iva_neto_pagar": iva_neto,
         "iva_neto_pagar_efectivo": pago_iva,
         "anticipo_islr": anticipo_islr,
@@ -593,9 +632,65 @@ def generate_seniat_txt_data(year: int, month: int, fortnight: int) -> tuple[str
                         alicuota=alicuota,
                     )
                     recibidas_lines.append(line)
-            wb.close()
         except Exception as e:
             logger.exception("Error leyendo retenciones recibidas para TXT en %s", path_r)
             
     return "".join(emitidas_lines), "".join(recibidas_lines)
+
+
+def validar_rif_venezolano(rif: str) -> bool:
+    """
+    Valida matemáticamente un RIF venezolano usando el algoritmo del Módulo 11 (dígito verificador).
+    """
+    if not rif:
+        return False
+    s = re.sub(r"[^A-Za-z0-9]", "", str(rif)).strip().upper()
+    if len(s) != 10:
+        return False
+    letra = s[0]
+    base_letras = {'V': 4, 'E': 8, 'J': 12, 'C': 12, 'P': 16, 'G': 20}
+    if letra not in base_letras:
+        return False
+    
+    factores = [3, 2, 7, 6, 5, 4, 3, 2]
+    try:
+        numeros = [int(x) for x in s[1:-1]]
+        digito_ingresado = int(s[-1])
+    except ValueError:
+        return False
+        
+    suma = base_letras[letra]
+    for n, f in zip(numeros, factores):
+        suma += n * f
+        
+    residuo = suma % 11
+    digito_calc = 0 if residuo == 0 else (11 - residuo)
+    if digito_calc >= 10:
+        digito_calc = 0
+        
+    return digito_calc == digito_ingresado
+
+
+def obtener_alicuota_islr_sugerida(concepto: str) -> Decimal:
+    """
+    Retorna el porcentaje sugerido de retención de ISLR según la categoría del concepto de servicio (Decreto 1808).
+    Retorna un valor Decimal de tasa (ej: Decimal("0.02") para 2%).
+    """
+    if not concepto:
+        return Decimal("0.00")
+    c = excel_store._normalize_text(str(concepto))
+    if any(k in c for k in ("honorario", "profesional", "medico", "ingenier", "abogad", "contad")):
+        return Decimal("0.03")  # Honorarios profesionales (persona jurídica residente: 3%)
+    elif any(k in c for k in ("publicidad", "propaganda", "valla", "anuncio")):
+        return Decimal("0.05")  # Publicidad y propaganda (5%)
+    elif any(k in c for k in ("arrendamiento", "alquiler", "arriend")):
+        return Decimal("0.05")  # Arrendamiento de inmuebles (jurídico: 5%)
+    elif any(k in c for k in ("transporte", "flete", "carga", "acarreo")):
+        return Decimal("0.03")  # Fletes / transporte (jurídico: 3%)
+    elif any(k in c for k in ("comision", "corretaje")):
+        return Decimal("0.05")  # Comisiones mercantiles (5%)
+    elif any(k in c for k in ("servicio", "mantenimiento", "reparacion", "mano de obra", "instalacion", "contratista", "obra")):
+        return Decimal("0.02")  # Prestación de servicios / contratistas en general (jurídico: 2%)
+    else:
+        return Decimal("0.00")  # Compra de mercancía u otros no sujetos a retención (0%)
 

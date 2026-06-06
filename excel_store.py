@@ -1008,6 +1008,212 @@ def append_retencion_emitida(
     wb.close()
 
 
+RETENCION_ISLR_HEADERS = [
+    "Numero_comprobante",
+    "Fecha_emision",
+    "Periodo_fiscal",
+    "Proveedor",
+    "Proveedor_RIF",
+    "Concepto_retencion",
+    "Numero_documento",
+    "Numero_control",
+    "Base_imponible",
+    "Porcentaje_retencion",
+    "ISLR_retenido",
+    "Total_factura",
+    "Fecha_registro"
+]
+
+def ensure_retencion_islr_workbook(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        return
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Retenciones_ISLR"
+    ws.append(RETENCION_ISLR_HEADERS)
+    wb.save(path)
+
+def append_retencion_islr(
+    path: Path,
+    *,
+    numero_comprobante: str,
+    fecha_emision: str,
+    periodo_fiscal: str,
+    proveedor: str,
+    proveedor_rif: str,
+    concepto_retencion: str,
+    numero_documento: str,
+    numero_control: str,
+    base_imponible: Decimal,
+    porcentaje_retencion: Decimal,
+    islr_retenido: Decimal,
+    total_factura: Decimal,
+) -> None:
+    ensure_retencion_islr_workbook(path)
+    wb = load_workbook(path)
+    ws = wb.active
+    ws.append(
+        [
+            numero_comprobante,
+            fecha_emision,
+            periodo_fiscal,
+            proveedor,
+            proveedor_rif,
+            concepto_retencion,
+            numero_documento,
+            numero_control,
+            float(base_imponible),
+            float(porcentaje_retencion),
+            float(islr_retenido),
+            float(total_factura),
+            datetime.now().isoformat(timespec="seconds"),
+        ]
+    )
+    wb.save(path)
+    wb.close()
+
+
+def export_comprobante_islr_pdf(
+    *,
+    out_path: Path,
+    numero_comprobante: str,
+    fecha_emision: str,
+    periodo_fiscal: str,
+    proveedor: str,
+    proveedor_rif: str,
+    concepto_retencion: str,
+    base_imponible: Decimal,
+    porcentaje_retencion: Decimal,
+    islr_retenido: Decimal,
+    total_factura: Decimal,
+    numero_documento: str,
+    numero_control: str,
+) -> Path:
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    c = canvas.Canvas(str(out_path), pagesize=letter)
+    width, height = letter
+    left = 40
+    right = width - 40
+    y = height - 50
+
+    # Header
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(left, y, "SUMINISTROS FERRETEROS VITTORIA (SUFEVICA), C.A.")
+    c.setFont("Helvetica", 9)
+    c.drawRightString(right, y, f"Comprobante Nro: {numero_comprobante}")
+    y -= 13
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(left, y, "RIF: J-40194130-3")
+    c.drawRightString(right, y, f"Fecha Emisión: {fecha_emision}")
+    y -= 25
+
+    c.setFont("Helvetica-Bold", 12)
+    c.drawCentredString(width / 2, y, "COMPROBANTE DE RETENCIÓN DE ISLR")
+    y -= 10
+    c.setFont("Helvetica-Oblique", 7.5)
+    c.drawCentredString(width / 2, y, "Decreto N° 1.808 - Reglamento Parcial de la Ley de Impuesto sobre la Renta sobre Retenciones")
+    y -= 25
+
+    # Beneficiary Info Box
+    box_y = y
+    box_h = 75
+    c.rect(left, box_y - box_h, right - left, box_h)
+    
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(left + 10, box_y - 15, "DATOS DEL BENEFICIARIO (PROVEEDOR RETENIDO)")
+    c.setFont("Helvetica", 9)
+    c.drawString(left + 10, box_y - 32, f"Razón Social: {proveedor}")
+    c.drawString(left + 10, box_y - 47, f"RIF: {proveedor_rif}")
+    c.drawString(left + 10, box_y - 62, f"Período Fiscal: {periodo_fiscal}")
+    y -= box_h + 25
+
+    # Table headers
+    headers = ["Factura Nro", "Control Nro", "Concepto de Retención", "Total Factura", "Base Imponible", "% Ret.", "ISLR Retenido"]
+    col_widths = [75, 75, 140, 75, 75, 40, 52] # Total width = 532
+    
+    table_top = y
+    c.setFont("Helvetica-Bold", 8.5)
+    
+    # Draw header row
+    c.rect(left, table_top - 20, right - left, 20, fill=0)
+    cx = left
+    for h, w in zip(headers, col_widths):
+        c.drawCentredString(cx + w/2, table_top - 14, h)
+        cx += w
+        
+    # Draw data row
+    table_data_y = table_top - 20
+    c.setFont("Helvetica", 8.5)
+    c.rect(left, table_data_y - 25, right - left, 25)
+    
+    # Values
+    pct = float(porcentaje_retencion)
+    if pct < 1.0:
+        pct = pct * 100.0
+    values = [
+        str(numero_documento),
+        str(numero_control),
+        str(concepto_retencion),
+        _format_monto_ves(total_factura),
+        _format_monto_ves(base_imponible),
+        f"{pct:.1f}%",
+        _format_monto_ves(islr_retenido)
+    ]
+    
+    cx = left
+    for idx, (val, w) in enumerate(zip(values, col_widths)):
+        if idx in (3, 4, 6): # right align amounts
+            c.drawRightString(cx + w - 5, table_data_y - 16, val)
+        else:
+            c.drawCentredString(cx + w/2, table_data_y - 16, val)
+        cx += w
+        
+    y = table_data_y - 25 - 60
+    
+    # Signatures
+    c.setFont("Helvetica-Bold", 8)
+    c.line(left + 40, y, left + 180, y)
+    c.drawCentredString(left + 110, y - 12, "FIRMA Y SELLO AGENTE")
+    c.drawCentredString(left + 110, y - 22, "SUFEVICA, C.A.")
+    
+    c.line(right - 180, y, right - 40, y)
+    c.drawCentredString(right - 110, y - 12, "FIRMA BENEFICIARIO")
+    c.drawCentredString(right - 110, y - 22, "RECIBIDO CONFORME")
+
+    c.save()
+    return out_path
+
+
+def monthly_retencion_islr_path(base_dir: Path, emission_date: date) -> Path:
+    return base_dir / f"RETEN-ISLR-{emission_date.strftime('%Y-%m')}.xlsx"
+
+
+def next_retencion_islr_number(base_dir: Path, *, emission_date: date) -> str:
+    """Genera el correlativo de ISLR: ISLR-YYYYMM + 6 secuencial."""
+    prefix = f"ISLR-{emission_date.strftime('%Y%m')}"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    max_seq = 0
+    # Buscar el mayor correlativo existente en todos los archivos de ISLR
+    for path in sorted(base_dir.glob("RETEN-ISLR-*.xlsx")):
+        wb = load_workbook(path, read_only=True, data_only=True)
+        try:
+            ws = wb.active
+            headers = _headers_index(ws)
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                raw = _cell(row, headers, "Numero_comprobante", "")
+                if raw and str(raw).startswith(prefix):
+                    seq_part = str(raw)[len(prefix):]
+                    if seq_part.isdigit():
+                        max_seq = max(max_seq, int(seq_part))
+        finally:
+            wb.close()
+    return f"{prefix}{max_seq + 1:06d}"
+
+
+
 def export_comprobante_emitido_excel(
     *,
     out_path: Path,
