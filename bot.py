@@ -741,6 +741,18 @@ def _match_intent(text: str) -> str | None:
         return "tributos_report"
     if _parse_retenciones_report_request(text) is not None:
         return "retenciones_report"
+    if any(
+        p in t_norm
+        for p in (
+            "generar txt seniat",
+            "txt seniat",
+            "descargar txt seniat",
+            "archivos txt seniat",
+            "txt de retenciones",
+            "txt iva",
+        )
+    ):
+        return "seniat_txt"
     return None
 
 
@@ -2109,6 +2121,15 @@ async def _process_intent(
         kb = _tributos_keyboard(today.year, today.month, fortnight, _generate_short_summary(report))
         await msg.reply_text(text, reply_markup=kb, parse_mode="Markdown")
         return
+    if intent == "seniat_txt":
+        today = date.today()
+        fortnight = 1 if today.day <= 15 else 2
+        status_msg = await msg.reply_text(
+            f"⏳ *Generando archivos TXT según la normativa del SENIAT para la quincena actual...*",
+            parse_mode="Markdown"
+        )
+        asyncio.create_task(_send_seniat_txt_telegram_async(update, context, today.year, today.month, fortnight, status_msg))
+        return
     if intent == "retenciones_report":
         parsed = _parse_retenciones_report_request(text)
         if parsed is None:
@@ -3006,6 +3027,86 @@ async def _send_reportes_telegram_async(
                 pass
 
 
+async def _send_seniat_txt_telegram_async(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    year: int,
+    month: int,
+    fortnight: int,
+    status_msg,
+) -> None:
+    import tempfile
+    
+    logger.info("Iniciando _send_seniat_txt_telegram_async para %d/%d Q%d", year, month, fortnight)
+    temp_files: list[Path] = []
+    
+    try:
+        # 1. Generar contenido TXT usando tributario_engine
+        emitidas_txt, recibidas_txt = tributario_engine.generate_seniat_txt_data(year, month, fortnight)
+        
+        # 2. Crear archivos temporales
+        # Retenciones Emitidas
+        emit_filename = f"RETENCIONES_IVA_EMITIDAS_{year}_{month:02d}_Q{fortnight}.txt"
+        emit_path = Path(tempfile.gettempdir()) / emit_filename
+        emit_path.write_text(emitidas_txt, encoding="utf-8")
+        temp_files.append(emit_path)
+        
+        # Retenciones Recibidas
+        recib_filename = f"RETENCIONES_IVA_RECIBIDAS_{year}_{month:02d}_Q{fortnight}.txt"
+        recib_path = Path(tempfile.gettempdir()) / recib_filename
+        recib_path.write_text(recibidas_txt, encoding="utf-8")
+        temp_files.append(recib_path)
+        
+        # 3. Enviar archivos a Telegram
+        sent_count = 0
+        if emitidas_txt.strip():
+            logger.info("Enviando TXT de emitidas a Telegram...")
+            with open(emit_path, "rb") as f:
+                await context.bot.send_document(
+                    chat_id=config.ALLOWED_USER_ID,
+                    document=f,
+                    filename=emit_filename,
+                    caption=f"📝 TXT Retenciones Emitidas (Compras) - Q{fortnight} {month:02d}/{year}"
+                )
+            sent_count += 1
+            
+        if recibidas_txt.strip():
+            logger.info("Enviando TXT de recibidas a Telegram...")
+            with open(recib_path, "rb") as f:
+                await context.bot.send_document(
+                    chat_id=config.ALLOWED_USER_ID,
+                    document=f,
+                    filename=recib_filename,
+                    caption=f"📝 TXT Retenciones Recibidas (Ventas) - Q{fortnight} {month:02d}/{year}"
+                )
+            sent_count += 1
+            
+        if sent_count > 0:
+            await status_msg.edit_text(
+                f"✅ *¡Archivos TXT generados con éxito!*\n\n"
+                f"Se han enviado los archivos correspondientes a la *Quincena {fortnight}* del mes *{month}/{year}* a este chat para su declaración en el portal del SENIAT.",
+                parse_mode="Markdown"
+            )
+        else:
+            await status_msg.edit_text(
+                f"⚠️ No se encontraron retenciones registradas en la *Quincena {fortnight}* del mes *{month}/{year}*.",
+                parse_mode="Markdown"
+            )
+            
+    except Exception as e:
+        logger.exception("Error al generar y enviar archivos TXT SENIAT por Telegram")
+        try:
+            await status_msg.edit_text(
+                f"❌ Error al generar los archivos TXT:\n\n{e!s}"
+            )
+        except Exception as edit_err:
+            logger.error("No se pudo editar el mensaje de error: %s", edit_err)
+    finally:
+        for path in temp_files:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 def _generate_short_summary(report: dict[str, object]) -> str:
@@ -3141,6 +3242,9 @@ def _tributos_keyboard(year: int, month: int, fortnight: int, report_text: str =
     keyboard.extend([
         [
             InlineKeyboardButton("📥 Descargar Reportes (Excel)", callback_data=f"tributos_download_{year}_{month}_{fortnight}")
+        ],
+        [
+            InlineKeyboardButton("📝 Generar TXT SENIAT", callback_data=f"tributos_seniattxt_{year}_{month}_{fortnight}")
         ],
         [
             InlineKeyboardButton("📤 Enviar Reportes por Correo (SMTP)", callback_data=f"tributos_sendemail_{year}_{month}_{fortnight}")
@@ -3776,6 +3880,18 @@ async def handle_tributos_callback(
             parse_mode="Markdown"
         )
         asyncio.create_task(_send_reportes_telegram_async(update, context, y, m, f, status_msg))
+        
+    elif data.startswith("tributos_seniattxt_"):
+        parts = data.split("_")
+        y = int(parts[2])
+        m = int(parts[3])
+        f = int(parts[4])
+        
+        status_msg = await msg.reply_text(
+            f"⏳ *Generando archivos TXT según la normativa del SENIAT...*",
+            parse_mode="Markdown"
+        )
+        asyncio.create_task(_send_seniat_txt_telegram_async(update, context, y, m, f, status_msg))
         
     elif data.startswith("tributos_sendemail_"):
         parts = data.split("_")

@@ -345,3 +345,257 @@ def get_compromiso_tributario_report(year: int, month: int, fortnight: int) -> d
         "anticipo_islr_alicuota": ALICUOTA_ANTICIPO_ISLR,
         "total_compromisos_a_pagar": total_pagos,
     }
+
+
+def clean_rif(rif: str) -> str:
+    """Elimina guiones, puntos y espacios de un RIF para la normativa del SENIAT."""
+    if not rif:
+        return ""
+    return re.sub(r"[^A-Za-z0-9]", "", str(rif)).strip().upper()
+
+
+def map_document_type(doc_type: str) -> str:
+    """Mapea el tipo de documento de texto a códigos SENIAT (01=Factura, 02=N/D, 03=N/C)."""
+    s = str(doc_type).strip().lower()
+    if "debito" in s:
+        return "02"
+    elif "credito" in s:
+        return "03"
+    else:
+        return "01"
+
+
+def format_seniat_txt_line(
+    agent_rif: str,
+    periodo: str,
+    invoice_date: str,
+    operation_type: str,
+    doc_type: str,
+    rif: str,
+    doc_num: str,
+    control_num: str,
+    total_amount: Decimal,
+    base_imponible: Decimal,
+    iva_retenido: Decimal,
+    doc_affected: str,
+    comprobante_num: str,
+    exento: Decimal,
+    alicuota: Decimal,
+    expediente: str = "0"
+) -> str:
+    """Genera una línea tabulada formateada según las normas estrictas del portal SENIAT."""
+    clean_agent_rif = clean_rif(agent_rif)
+    clean_rif_sujeto = clean_rif(rif)
+    
+    clean_doc_num = re.sub(r"[^a-zA-Z0-9\-]", "", str(doc_num)).strip()
+    clean_control_num = re.sub(r"[^a-zA-Z0-9\-]", "", str(control_num)).strip()
+    clean_doc_affected = re.sub(r"[^a-zA-Z0-9\-]", "", str(doc_affected)).strip() if doc_affected and str(doc_affected) != "0" else "0"
+    
+    total_str = f"{total_amount:.2f}"
+    base_str = f"{base_imponible:.2f}"
+    iva_ret_str = f"{iva_retenido:.2f}"
+    exento_str = f"{exento:.2f}"
+    alicuota_str = f"{alicuota:.2f}"
+    
+    return (
+        f"{clean_agent_rif}\t"
+        f"{periodo}\t"
+        f"{invoice_date}\t"
+        f"{operation_type}\t"
+        f"{doc_type}\t"
+        f"{clean_rif_sujeto}\t"
+        f"{clean_doc_num}\t"
+        f"{clean_control_num}\t"
+        f"{total_str}\t"
+        f"{base_str}\t"
+        f"{iva_ret_str}\t"
+        f"{clean_doc_affected}\t"
+        f"{comprobante_num}\t"
+        f"{exento_str}\t"
+        f"{alicuota_str}\t"
+        f"{expediente}\n"
+    )
+
+
+def generate_seniat_txt_data(year: int, month: int, fortnight: int) -> tuple[str, str]:
+    """
+    Genera el contenido para los archivos TXT de declaración de IVA (Emitidas y Recibidas)
+    para una quincena específica.
+    """
+    start_date, end_date = get_fortnight_range(year, month, fortnight)
+    periodo_fiscal = f"{year}{month:02d}"
+    
+    emitidas_lines = []
+    recibidas_lines = []
+    
+    # ----------------------------------------------------
+    # 1. RETENCIONES EMITIDAS (Compras / Proveedores)
+    # ----------------------------------------------------
+    base_dir = config.RETENCIONES_EMITIDAS_DIR
+    if base_dir.is_dir():
+        for path in sorted(base_dir.glob("RETEN-EMIT-*.xlsx")):
+            try:
+                wb = load_workbook(path, read_only=True, data_only=True)
+                ws = wb.active
+                headers = excel_store._headers_index(ws)
+                
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    if not row:
+                        continue
+                    fecha_cell = excel_store._cell(row, headers, "Fecha_emision", None)
+                    fecha_doc = _parse_row_date(fecha_cell)
+                    
+                    if fecha_doc is None or fecha_doc < start_date or fecha_doc > end_date:
+                        continue
+                        
+                    num_comprobante = str(excel_store._cell(row, headers, "Numero_comprobante", "")).strip()
+                    proveedor_rif = str(excel_store._cell(row, headers, "Proveedor_RIF", "")).strip()
+                    documentos = str(excel_store._cell(row, headers, "Documentos", "")).strip()
+                    controles = str(excel_store._cell(row, headers, "Controles", "")).strip()
+                    
+                    base_imponible_total = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Base_imponible_total", None)) or Decimal("0")
+                    iva_total = excel_store._parse_monto_cell(excel_store._cell(row, headers, "IVA_total", None)) or Decimal("0")
+                    iva_retenido_total = excel_store._parse_monto_cell(excel_store._cell(row, headers, "IVA_retenido_total", None)) or Decimal("0")
+                    porcentaje_retencion = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Porcentaje_retencion", None)) or Decimal("0.75")
+                    
+                    # Normalizar porcentaje (ej: si está guardado como 75 en vez de 0.75)
+                    if porcentaje_retencion > Decimal("1.0"):
+                        porcentaje_retencion = porcentaje_retencion / Decimal("100.0")
+                        
+                    docs = [d.strip() for d in re.split(r"[|,]", documentos) if d.strip()]
+                    ctrls = [c.strip() for c in re.split(r"[|,]", controles) if c.strip()]
+                    
+                    # Intentar cargar detalles desde el libro de facturas recibidas (compras)
+                    items = excel_store.load_facturas_by_document_numbers(config.FACTURAS_RECIBIDAS_PATH, docs)
+                    items_by_doc = {str(item.numero_documento).strip().upper(): item for item in items}
+                    
+                    N = len(docs) or 1
+                    for idx, doc_num in enumerate(docs):
+                        item = items_by_doc.get(str(doc_num).strip().upper())
+                        control = ctrls[idx] if idx < len(ctrls) else ("-" if not item else item.numero_control)
+                        
+                        if item:
+                            invoice_date_parsed = _parse_row_date(item.fecha_emision)
+                            invoice_date_str = invoice_date_parsed.strftime("%d/%m/%Y") if invoice_date_parsed else str(fecha_cell)
+                            doc_type = map_document_type(item.tipo_documento)
+                            
+                            base = item.base_imponible or Decimal("0")
+                            iva = item.monto_iva or Decimal("0")
+                            exento = item.monto_exento or Decimal("0")
+                            total = item.total or (base + iva + exento)
+                            iva_ret = (iva * porcentaje_retencion).quantize(Decimal("0.01"))
+                        else:
+                            # Fallback: Distribuir equitativamente
+                            invoice_date_str = str(fecha_cell)
+                            doc_type = "01"
+                            
+                            base = (base_imponible_total / N).quantize(Decimal("0.01"))
+                            iva = (iva_total / N).quantize(Decimal("0.01"))
+                            iva_ret = (iva_retenido_total / N).quantize(Decimal("0.01"))
+                            exento = Decimal("0.00")
+                            total = base + iva
+                            
+                        alicuota = Decimal("16.00")
+                        if base > 0:
+                            alicuota = ((iva / base) * 100).quantize(Decimal("0.01"))
+                            
+                        line = format_seniat_txt_line(
+                            agent_rif=config.EMITTER_RIF,
+                            periodo=periodo_fiscal,
+                            invoice_date=invoice_date_str,
+                            operation_type="C",
+                            doc_type=doc_type,
+                            rif=proveedor_rif,
+                            doc_num=doc_num,
+                            control_num=control,
+                            total_amount=total,
+                            base_imponible=base,
+                            iva_retenido=iva_ret,
+                            doc_affected="0",
+                            comprobante_num=num_comprobante,
+                            exento=exento,
+                            alicuota=alicuota,
+                        )
+                        emitidas_lines.append(line)
+                wb.close()
+            except Exception as e:
+                logger.exception("Error leyendo retenciones emitidas para TXT en %s", path)
+                
+    # ----------------------------------------------------
+    # 2. RETENCIONES RECIBIDAS (Ventas / Clientes)
+    # ----------------------------------------------------
+    path_r = config.EXCEL_PATH
+    if path_r.exists():
+        try:
+            wb = load_workbook(path_r, read_only=True, data_only=True)
+            ws = wb.active
+            headers = excel_store._headers_index(ws)
+            
+            for row in ws.iter_rows(min_row=2, values_only=True):
+                if not row:
+                    continue
+                fecha_cell = excel_store._cell(row, headers, "Fecha_emision", None)
+                fecha_doc = _parse_row_date(fecha_cell)
+                
+                if fecha_doc is None or fecha_doc < start_date or fecha_doc > end_date:
+                    continue
+                    
+                numero_comprobante = str(excel_store._cell(row, headers, "Numero_comprobante", "")).strip()
+                rif = str(excel_store._cell(row, headers, "RIF", "")).strip()
+                fechas_facturas = str(excel_store._cell(row, headers, "Fechas_facturas", "")).strip()
+                numeros_facturas = str(excel_store._cell(row, headers, "Numeros_facturas", "")).strip()
+                controles_facturas = str(excel_store._cell(row, headers, "Controles_facturas", "")).strip()
+                
+                total_compra_con_iva = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Total_compra_con_iva", None)) or Decimal("0")
+                base_imponible = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Base_imponible", None)) or Decimal("0")
+                iva_retenido = excel_store._parse_monto_cell(excel_store._cell(row, headers, "IVA_retenido", None)) or Decimal("0")
+                
+                dates = [d.strip() for d in re.split(r"[|,]", fechas_facturas) if d.strip()]
+                numbers = [n.strip() for n in re.split(r"[|,]", numeros_facturas) if n.strip()]
+                controls = [c.strip() for c in re.split(r"[|,]", controles_facturas) if c.strip()]
+                
+                N = max(len(numbers), 1)
+                for idx in range(N):
+                    doc_num = numbers[idx] if idx < len(numbers) else ("-" if N == 1 else f"FAC-REF-{idx}")
+                    control = controls[idx] if idx < len(controls) else "-"
+                    
+                    inv_date_raw = dates[idx] if idx < len(dates) else None
+                    inv_date_parsed = _parse_row_date(inv_date_raw)
+                    inv_date_str = inv_date_parsed.strftime("%d/%m/%Y") if inv_date_parsed else str(fecha_cell)
+                    
+                    base = (base_imponible / N).quantize(Decimal("0.01"))
+                    iva_ret = (iva_retenido / N).quantize(Decimal("0.01"))
+                    total = (total_compra_con_iva / N).quantize(Decimal("0.01"))
+                    
+                    # Estimación de IVA y Exento para ventas
+                    iva = (base * Decimal("0.16")).quantize(Decimal("0.01"))
+                    exento = max(Decimal("0.00"), total - base - iva)
+                    
+                    alicuota = Decimal("16.00")
+                    if base > 0:
+                        alicuota = ((iva / base) * 100).quantize(Decimal("0.01"))
+                        
+                    line = format_seniat_txt_line(
+                        agent_rif=config.EMITTER_RIF,
+                        periodo=periodo_fiscal,
+                        invoice_date=inv_date_str,
+                        operation_type="V",
+                        doc_type="01",
+                        rif=rif,
+                        doc_num=doc_num,
+                        control_num=control,
+                        total_amount=total,
+                        base_imponible=base,
+                        iva_retenido=iva_ret,
+                        doc_affected="0",
+                        comprobante_num=numero_comprobante,
+                        exento=exento,
+                        alicuota=alicuota,
+                    )
+                    recibidas_lines.append(line)
+            wb.close()
+        except Exception as e:
+            logger.exception("Error leyendo retenciones recibidas para TXT en %s", path_r)
+            
+    return "".join(emitidas_lines), "".join(recibidas_lines)
+

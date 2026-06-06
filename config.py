@@ -147,4 +147,5 @@ DEFAULT_ACCOUNTANT_EMAIL: str | None = os.environ.get("DEFAULT_ACCOUNTANT_EMAIL"
 PORT: int = int(os.environ.get("PORT", "8000"))
 RENDER_EXTERNAL_URL: str | None = os.environ.get("RENDER_EXTERNAL_URL") or None
 
-
+# RIF del Agente de Retención (nuestra empresa)
+EMITTER_RIF: str = os.environ.get("EMITTER_RIF", "J-40194130-3").strip()
