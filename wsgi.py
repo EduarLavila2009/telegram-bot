@@ -1,23 +1,24 @@
 #!/usr/bin/env python
 import sys
 from pathlib import Path
+import importlib.util
+import importlib.machinery
 
-# Agregar el directorio padre al sys.path para poder importar este directorio como un paquete
+# Obtener directorio actual
 current_dir = Path(__file__).resolve().parent
-parent_dir = current_dir.parent
-if str(parent_dir) not in sys.path:
-    sys.path.insert(0, str(parent_dir))
 
-# Importar dinámicamente la función principal usando el nombre de la carpeta como paquete
-package_name = current_dir.name
-try:
-    bot_module = __import__(f"{package_name}.bot", fromlist=["main"])
-    main_func = bot_module.main
-except ImportError as e:
-    # Si por alguna razón no se puede importar como paquete, intentamos importar directamente
-    sys.path.insert(0, str(current_dir))
-    import bot
-    main_func = bot.main
+# Registrar el paquete bot_financiero_telegram dinámicamente si no está en sys.modules.
+# Esto es crítico para despliegues en la nube (como Render) donde la carpeta clonada
+# puede tener un nombre con guiones (ej. "telegram-bot") y no se puede importar
+# directamente como un paquete de Python, lo que causaría fallas por importaciones relativas.
+if "bot_financiero_telegram" not in sys.modules:
+    spec = importlib.machinery.ModuleSpec("bot_financiero_telegram", None, is_package=True)
+    pkg = importlib.util.module_from_spec(spec)
+    pkg.__path__ = [str(current_dir)]
+    pkg.__file__ = str(current_dir / "__init__.py")
+    sys.modules["bot_financiero_telegram"] = pkg
+
+from bot_financiero_telegram.bot import main as main_func
 
 if __name__ == "__main__":
     main_func()
