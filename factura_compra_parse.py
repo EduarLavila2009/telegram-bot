@@ -177,6 +177,7 @@ class FacturaCompraParsed:
     total: str
     contribuyente_tipo: str = ""
     tasa_cambio: str = ""
+    moneda_original: str = "VES"
 
 
 def parse_factura_compra_text(text: str) -> FacturaCompraParsed | None:

@@ -2500,6 +2500,92 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
+def _process_parsed_ocr_invoice(fc: object) -> dict:
+    from decimal import Decimal
+    from . import tributario_engine
+    
+    # 1. Validar RIF
+    rif_valido = tributario_engine.validar_rif_venezolano(fc.proveedor_rif)
+    
+    # 2. Conversión a Bolívares si es USD
+    moneda = (getattr(fc, "moneda_original", "VES") or "VES").strip().upper()
+    
+    # Normalizar montos
+    def _clean_val(v):
+        if not v:
+            return Decimal("0.00")
+        try:
+            cleaned = str(v).replace(" ", "").replace(",", ".")
+            return Decimal(cleaned)
+        except Exception:
+            return Decimal("0.00")
+            
+    subtotal_val = _clean_val(fc.subtotal)
+    exento_val = _clean_val(fc.monto_exento)
+    base_val = _clean_val(fc.base_imponible)
+    iva_val = _clean_val(fc.monto_iva)
+    total_val = _clean_val(fc.total)
+    
+    tasa_usada = fc.tasa_cambio
+    
+    if moneda == "USD":
+        # Determinar tasa de cambio
+        rate = Decimal("0.00")
+        if fc.tasa_cambio:
+            try:
+                rate = Decimal(str(fc.tasa_cambio).replace(",", "."))
+            except Exception:
+                pass
+        if rate <= 0:
+            # Fallback a tasa BCV del día
+            try:
+                rate = Decimal(str(get_current_bcv_rate()))
+            except Exception:
+                rate = Decimal("39.50")  # Fallback definitivo razonable
+        
+        # Guardar la tasa usada en formato legible
+        tasa_usada = f"{rate:.4f}"
+        
+        # Multiplicar los valores
+        subtotal_val = (subtotal_val * rate).quantize(Decimal("0.01"))
+        exento_val = (exento_val * rate).quantize(Decimal("0.01"))
+        base_val = (base_val * rate).quantize(Decimal("0.01"))
+        iva_val = (iva_val * rate).quantize(Decimal("0.01"))
+        total_val = (total_val * rate).quantize(Decimal("0.01"))
+    
+    # 3. Determinar alícuota sugerida de ISLR
+    # Si base_val es 0, o si el monto exento es igual al subtotal o al total facturado, la alícuota sugerida es 0%
+    if base_val == 0 or exento_val == total_val or (subtotal_val > 0 and exento_val == subtotal_val):
+        alicuota_sugerida = Decimal("0.00")
+    else:
+        concepto_sugerido = fc.tipo_documento or "Prestación de Servicios en General"
+        alicuota_sugerida = tributario_engine.obtener_alicuota_islr_sugerida(concepto_sugerido)
+        
+    return {
+        "tipo_documento": fc.tipo_documento,
+        "fecha_emision": fc.fecha_emision,
+        "fecha_vencimiento": fc.fecha_vencimiento,
+        "numero_documento": fc.numero_documento,
+        "numero_control": fc.numero_control,
+        "proveedor": fc.proveedor,
+        "proveedor_rif": fc.proveedor_rif,
+        "proveedor_telefono": fc.proveedor_telefono,
+        "direccion_fiscal_proveedor": fc.direccion_fiscal_proveedor,
+        "receptor": fc.receptor,
+        "receptor_rif": fc.receptor_rif,
+        "subtotal": f"{subtotal_val:.2f}",
+        "monto_exento": f"{exento_val:.2f}",
+        "base_imponible": f"{base_val:.2f}",
+        "monto_iva": f"{iva_val:.2f}",
+        "total": f"{total_val:.2f}",
+        "contribuyente_tipo": fc.contribuyente_tipo,
+        "tasa_cambio": tasa_usada,
+        "rif_valido": rif_valido,
+        "islr_rate": str(alicuota_sugerida),
+        "islr_concept": "Servicios en General (Jurídicos: 2%)" if alicuota_sugerida == Decimal("0.02") else "Honorarios Profesionales / Fletes (Jurídicos: 3%)" if alicuota_sugerida == Decimal("0.03") else "Publicidad, Propaganda y Comisiones (5%)" if alicuota_sugerida == Decimal("0.05") else "Compra de Mercancía / No sujeto"
+    }
+
+
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if not msg:
@@ -2530,35 +2616,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
         if category == "factura":
             fc = ocr_extract.extract_invoice_from_image(img)
-            rif_valido = tributario_engine.validar_rif_venezolano(fc.proveedor_rif)
-            
-            concepto_sugerido = fc.tipo_documento or "Prestación de Servicios en General"
-            alicuota_sugerida = tributario_engine.obtener_alicuota_islr_sugerida(concepto_sugerido)
-            
-            context.user_data["pending_ocr_invoice"] = {
-                "tipo_documento": fc.tipo_documento,
-                "fecha_emision": fc.fecha_emision,
-                "fecha_vencimiento": fc.fecha_vencimiento,
-                "numero_documento": fc.numero_documento,
-                "numero_control": fc.numero_control,
-                "proveedor": fc.proveedor,
-                "proveedor_rif": fc.proveedor_rif,
-                "proveedor_telefono": fc.proveedor_telefono,
-                "direccion_fiscal_proveedor": fc.direccion_fiscal_proveedor,
-                "receptor": fc.receptor,
-                "receptor_rif": fc.receptor_rif,
-                "subtotal": fc.subtotal,
-                "monto_exento": fc.monto_exento,
-                "base_imponible": fc.base_imponible,
-                "monto_iva": fc.monto_iva,
-                "total": fc.total,
-                "contribuyente_tipo": fc.contribuyente_tipo,
-                "tasa_cambio": fc.tasa_cambio,
-                "rif_valido": rif_valido,
-                "islr_rate": str(alicuota_sugerida),
-                "islr_concept": "Servicios en General (Jurídicos: 2%)" if alicuota_sugerida == Decimal("0.02") else "Honorarios Profesionales / Fletes (Jurídicos: 3%)" if alicuota_sugerida == Decimal("0.03") else "Publicidad, Propaganda y Comisiones (5%)" if alicuota_sugerida == Decimal("0.05") else "Compra de Mercancía / No sujeto"
-            }
-            
+            context.user_data["pending_ocr_invoice"] = _process_parsed_ocr_invoice(fc)
             await _send_ocr_invoice_card(update, context, status_msg)
             
         elif category == "retencion_iva":
@@ -2818,33 +2876,7 @@ async def handle_ocr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             
             if force_type == "factura":
                 fc = ocr_extract.extract_invoice_from_image(img)
-                rif_valido = tributario_engine.validar_rif_venezolano(fc.proveedor_rif)
-                concepto_sugerido = fc.tipo_documento or "Prestación de Servicios en General"
-                alicuota_sugerida = tributario_engine.obtener_alicuota_islr_sugerida(concepto_sugerido)
-                
-                context.user_data["pending_ocr_invoice"] = {
-                    "tipo_documento": fc.tipo_documento,
-                    "fecha_emision": fc.fecha_emision,
-                    "fecha_vencimiento": fc.fecha_vencimiento,
-                    "numero_documento": fc.numero_documento,
-                    "numero_control": fc.numero_control,
-                    "proveedor": fc.proveedor,
-                    "proveedor_rif": fc.proveedor_rif,
-                    "proveedor_telefono": fc.proveedor_telefono,
-                    "direccion_fiscal_proveedor": fc.direccion_fiscal_proveedor,
-                    "receptor": fc.receptor,
-                    "receptor_rif": fc.receptor_rif,
-                    "subtotal": fc.subtotal,
-                    "monto_exento": fc.monto_exento,
-                    "base_imponible": fc.base_imponible,
-                    "monto_iva": fc.monto_iva,
-                    "total": fc.total,
-                    "contribuyente_tipo": fc.contribuyente_tipo,
-                    "tasa_cambio": fc.tasa_cambio,
-                    "rif_valido": rif_valido,
-                    "islr_rate": str(alicuota_sugerida),
-                    "islr_concept": "Servicios en General (Jurídicos: 2%)" if alicuota_sugerida == Decimal("0.02") else "Honorarios Profesionales / Fletes (Jurídicos: 3%)" if alicuota_sugerida == Decimal("0.03") else "Publicidad, Propaganda y Comisiones (5%)" if alicuota_sugerida == Decimal("0.05") else "Compra de Mercancía / No sujeto"
-                }
+                context.user_data["pending_ocr_invoice"] = _process_parsed_ocr_invoice(fc)
                 context.user_data.pop("pending_unknown_image", None)
                 saved_path.unlink(missing_ok=True)
                 await _send_ocr_invoice_card(update, context, msg_to_edit=msg)

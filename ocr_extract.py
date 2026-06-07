@@ -120,19 +120,23 @@ Devuelve UNICAMENTE un JSON valido con estas claves exactas:
 - direccion_fiscal_proveedor (direccion del emisor si esta visible, o vacio "")
 - receptor (nombre o razon social del receptor, ej: SUMINISTROS FERRETEROS VITTORIA, C.A.)
 - receptor_rif (RIF del receptor, ej: J-40194130-3)
-- subtotal (monto subtotal en bolivares Bs, sin separadores de miles y con punto decimal, ej: 2000.00)
-- monto_exento (monto exento de IVA en bolivares Bs, ej: 0.00)
-- base_imponible (base imponible gravada en bolivares Bs, ej: 2000.00)
-- monto_iva (monto del IVA en bolivares Bs, ej: 320.00)
-- total (monto total en bolivares Bs, ej: 2320.00)
+- subtotal (monto subtotal en la moneda original de los montos extraidos, ej: 2000.00)
+- monto_exento (monto exento de IVA en la moneda original de los montos extraidos, ej: 0.00)
+- base_imponible (base imponible gravada en la moneda original de los montos extraidos, ej: 2000.00)
+- monto_iva (monto del IVA en la moneda original de los montos extraidos, ej: 320.00)
+- total (monto total en la moneda original de los montos extraidos, ej: 2320.00)
 - contribuyente_tipo (determina si el emisor es "Especial", "Ordinario" o "Formal" segun las leyendas de la factura, o vacio "")
-- tasa_cambio (tasa de cambio de la factura si esta en USD, o vacio "")
+- tasa_cambio (tasa de cambio de la factura si esta presente en el documento, ej: 39.58, o vacio "")
+- moneda_original (la moneda de los montos extraidos: "VES" para Bolívares o "USD" para Dólares)
 
 Reglas:
-1) Todos los montos deben expresarse en Bolívares (Bs.). Si los montos en la imagen están expresados en dólares (USD) u otra moneda, busca la tasa de cambio oficial (Tasa BCV) impresa en la misma factura y realiza la conversión a Bolívares en el JSON resultante.
-2) Si un dato no aparece, usa cadena vacia "".
-3) No agregues texto explicativo fuera del JSON.
-4) Formato de montos: numerico sin comas ni puntos de miles (ej: 12500.50).
+1) Moneda y Selección de Datos:
+   - Si la factura muestra montos tanto en Bolívares (VES/Bs.) como en Dólares (USD) (factura de doble columna o de pago referencial), DEBES extraer los montos en BOLÍVARES (Bs.) e indicar 'moneda_original': "VES". NO realices ninguna conversión matemática ni multiplicación por tasa de cambio.
+   - Solo si los montos están expresados única y exclusivamente en Dólares (USD) sin conversión alguna a Bolívares en el documento, extrae los montos en USD e indica 'moneda_original': "USD".
+2) Formato de montos: numérico sin comas ni puntos de miles, utilizando el punto (.) como separador decimal (ej: 12500.50).
+3) Formato de tasa_cambio: si está presente, devuélvela como número decimal utilizando el punto como separador decimal (ej: 39.5858), NO elimines el punto o coma decimal original del valor.
+4) Si un dato no aparece, usa cadena vacia "".
+5) No agregues texto explicativo fuera del JSON.
 """
 
 ISLR_PROMPT = """
@@ -151,10 +155,10 @@ Devuelve UNICAMENTE un JSON valido con estas claves exactas:
 - total_factura (monto total de la factura en bolivares Bs, ej: 1160.00)
 
 Reglas:
-1) Todos los montos deben expresarse en Bolívares (Bs.). Si están en dólares, realiza la conversión utilizando la tasa de cambio del comprobante.
-2) Si un dato no aparece, usa cadena vacia "".
-3) No agregues texto explicativo fuera del JSON.
-4) Formato de montos: numerico sin comas ni puntos de miles (ej: 1000.00).
+1) Todos los montos deben expresarse en Bolívares (Bs.). Si los montos en la imagen están expresados en USD y no hay conversión impresa, realiza la conversión utilizando la tasa de cambio del comprobante. Si ya están en Bs., extrae directamente los montos en bolívares.
+2) Formato de montos: numérico sin comas ni puntos de miles, usando punto (.) como separador decimal (ej: 1000.00).
+3) Si un dato no aparece, usa cadena vacia "".
+4) No agregues texto explicativo fuera del JSON.
 """
 
 CLASSIFY_PROMPT = """
@@ -221,6 +225,7 @@ def extract_invoice_from_image(image: Image.Image) -> FacturaCompraParsed:
         total=_safe_str(data.get("total")),
         contribuyente_tipo=_safe_str(data.get("contribuyente_tipo")),
         tasa_cambio=_safe_str(data.get("tasa_cambio")),
+        moneda_original=_safe_str(data.get("moneda_original")) or "VES",
     )
 
 def extract_islr_from_image(image: Image.Image) -> dict:

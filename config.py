@@ -135,7 +135,7 @@ FIRMA_SELLO_PATH = _resolve_path_env(
 
 OPENAI_API_KEY: str | None = os.environ.get("OPENAI_API_KEY") or None
 GEMINI_API_KEY: str | None = os.environ.get("GEMINI_API_KEY") or None
-GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash").strip()
+GEMINI_MODEL: str = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
 
 SMTP_SERVER: str | None = os.environ.get("SMTP_SERVER") or None
 SMTP_PORT: int = int(os.environ.get("SMTP_PORT", "587"))
