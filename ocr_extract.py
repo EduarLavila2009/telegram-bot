@@ -5,11 +5,30 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from io import BytesIO
+import time
+import logging
 
 from google import genai
 from PIL import Image
 
 from . import config
+
+logger = logging.getLogger(__name__)
+
+def _generate_content_with_retry(client, model: str, contents: list, max_retries: int = 5, initial_delay: float = 2.0) -> object:
+    delay = initial_delay
+    for attempt in range(max_retries):
+        try:
+            return client.models.generate_content(model=model, contents=contents)
+        except Exception as e:
+            logger.warning(
+                f"Error al llamar a Gemini (intento {attempt + 1}/{max_retries}): {e}"
+            )
+            if attempt == max_retries - 1:
+                raise e
+            time.sleep(delay)
+            delay *= 2
+
 
 
 @dataclass
@@ -79,7 +98,8 @@ def extract_from_image(image: Image.Image) -> Extracted:
 
     client = genai.Client(api_key=config.GEMINI_API_KEY)
     image_bytes = _image_to_bytes(image)
-    response = client.models.generate_content(
+    response = _generate_content_with_retry(
+        client,
         model=config.GEMINI_MODEL,
         contents=[
             SYSTEM_PROMPT,
@@ -177,7 +197,8 @@ def classify_image_type(image: Image.Image) -> str:
 
     client = genai.Client(api_key=config.GEMINI_API_KEY)
     image_bytes = _image_to_bytes(image)
-    response = client.models.generate_content(
+    response = _generate_content_with_retry(
+        client,
         model=config.GEMINI_MODEL,
         contents=[
             CLASSIFY_PROMPT,
@@ -196,7 +217,8 @@ def extract_invoice_from_image(image: Image.Image) -> FacturaCompraParsed:
 
     client = genai.Client(api_key=config.GEMINI_API_KEY)
     image_bytes = _image_to_bytes(image)
-    response = client.models.generate_content(
+    response = _generate_content_with_retry(
+        client,
         model=config.GEMINI_MODEL,
         contents=[
             INVOICE_PROMPT,
@@ -234,7 +256,8 @@ def extract_islr_from_image(image: Image.Image) -> dict:
 
     client = genai.Client(api_key=config.GEMINI_API_KEY)
     image_bytes = _image_to_bytes(image)
-    response = client.models.generate_content(
+    response = _generate_content_with_retry(
+        client,
         model=config.GEMINI_MODEL,
         contents=[
             ISLR_PROMPT,
