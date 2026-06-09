@@ -5338,10 +5338,20 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     # Intentar responder al usuario si es posible
     if isinstance(update, Update) and update.effective_message:
         try:
-            await update.effective_message.reply_text(
-                "⚠️ Ocurrió un error inesperado al procesar tu solicitud.\n"
-                "El detalle técnico ha sido registrado en los logs del servidor."
-            )
+            import traceback
+            tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
+            tb_string = "".join(tb_list)
+            
+            u = update.effective_user
+            if u and u.id == config.ALLOWED_USER_ID:
+                # Cortar si excede el límite de mensaje de Telegram
+                err_msg = f"⚠️ *Error capturado:*\n```python\n{tb_string[:3800]}\n```"
+                await update.effective_message.reply_text(err_msg, parse_mode="Markdown")
+            else:
+                await update.effective_message.reply_text(
+                    "⚠️ Ocurrió un error inesperado al procesar tu solicitud.\n"
+                    "El detalle técnico ha sido registrado en los logs del servidor."
+                )
         except Exception:
             pass
 
