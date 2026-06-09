@@ -280,3 +280,40 @@ def extract_islr_from_image(image: Image.Image) -> dict:
         "islr_retenido": _safe_str(data.get("islr_retenido")),
         "total_factura": _safe_str(data.get("total_factura")),
     }
+
+
+BARCODE_PROMPT = """
+Analiza esta imagen y busca cualquier código de barras lineal (ej. UPC, EAN, Code 128) o código QR que corresponda a un producto.
+Devuelve UNICAMENTE el valor del código leído en texto plano, sin espacios ni caracteres adicionales.
+Si no hay un código de barras o código QR visible o legible en la imagen, responde estrictamente con la palabra "NONE" en mayúsculas.
+No agregues texto explicativo o formato adicional fuera del código decodificado.
+"""
+
+def extract_barcode_from_image(image: Image.Image) -> str:
+    """
+    Usa la API de Gemini para leer un código de barras de la imagen y retornar su valor.
+    """
+    if not config.GEMINI_API_KEY:
+        return "NONE"
+
+    client = genai.Client(api_key=config.GEMINI_API_KEY)
+    image_bytes = _image_to_bytes(image)
+    try:
+        response = _generate_content_with_retry(
+            client,
+            model=config.GEMINI_MODEL,
+            contents=[
+                BARCODE_PROMPT,
+                genai.types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+            ],
+        )
+        result = _safe_str(getattr(response, "text", "")).strip().upper()
+        # Eliminar posible formato markdown de texto plano si Gemini lo incluye
+        result = re.sub(r"[`'\"]", "", result).strip()
+        if not result or "NONE" in result:
+            return "NONE"
+        return result
+    except Exception as e:
+        logger.error(f"Error al extraer codigo de barras con Gemini: {e}")
+        return "NONE"
+

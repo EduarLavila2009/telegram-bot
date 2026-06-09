@@ -1938,3 +1938,112 @@ def load_reportes_z_by_date_range(
             r[6]
         ])
     return out
+
+
+def search_products_in_excel(path: Path, query: str, search_by: str = "desc") -> list[dict]:
+    """
+    Busca productos en el archivo Excel de inventario.
+    
+    Argumentos:
+        path: Ruta al archivo Excel
+        query: Término de búsqueda (código o descripción)
+        search_by: "code" o "desc"
+        
+    Retorna:
+        Lista de diccionarios: [{"code": str, "description": str, "price": float}]
+    """
+    if not path.exists():
+        return []
+        
+    wb = load_workbook(path, read_only=True, data_only=True)
+    results = []
+    try:
+        # Intentar buscar la hoja más adecuada: active o que contenga "prod" o "inv"
+        ws = wb.active
+        for name in wb.sheetnames:
+            if "prod" in name.lower() or "inv" in name.lower():
+                ws = wb[name]
+                break
+                
+        # Obtener la primera fila para buscar cabeceras
+        first_row_iter = ws.iter_rows(max_row=1, values_only=True)
+        try:
+            first_row = next(first_row_iter)
+        except StopIteration:
+            return []
+            
+        if not first_row:
+            return []
+            
+        headers = [str(cell).strip().lower() for cell in first_row if cell is not None]
+        
+        # Identificar columnas
+        code_idx = -1
+        desc_idx = -1
+        price_idx = -1
+        barcode_idx = -1
+        
+        for idx, h in enumerate(headers):
+            if any(x in h for x in ("barr", "upc", "ean", "scan")):
+                barcode_idx = idx
+            elif any(x in h for x in ("cod", "ref")):
+                code_idx = idx
+            elif any(x in h for x in ("desc", "nomb", "prod", "det")):
+                desc_idx = idx
+            elif any(x in h for x in ("prec", "cost", "usd", "unit", "val")):
+                price_idx = idx
+                
+        # Índices por defecto si no se detectan cabeceras
+        if code_idx == -1: code_idx = 0
+        if desc_idx == -1: desc_idx = 1
+        if price_idx == -1: price_idx = 2
+        
+        query_norm = query.strip().lower()
+        
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if not row or len(row) <= max(code_idx, desc_idx, price_idx, barcode_idx):
+                continue
+                
+            code_val = str(row[code_idx] or "").strip()
+            desc_val = str(row[desc_idx] or "").strip()
+            barcode_val = str(row[barcode_idx] or "").strip() if barcode_idx != -1 else ""
+            price_val = row[price_idx]
+            
+            # Convertir precio a float
+            try:
+                if isinstance(price_val, str):
+                    clean_price = price_val.replace("Bs.", "").replace("$", "").replace("USD", "").strip()
+                    if "," in clean_price and "." in clean_price:
+                        clean_price = clean_price.replace(".", "").replace(",", ".")
+                    elif "," in clean_price:
+                        clean_price = clean_price.replace(",", ".")
+                    price_float = float(clean_price)
+                elif isinstance(price_val, (int, float)):
+                    price_float = float(price_val)
+                else:
+                    price_float = 0.0
+            except Exception:
+                price_float = 0.0
+                
+            if not code_val and not desc_val:
+                continue
+                
+            match = False
+            if search_by == "code":
+                # Coincidencia si el código o el código de barras contiene el query
+                match = (query_norm in code_val.lower()) or (barcode_val and query_norm in barcode_val.lower())
+            else:
+                # Coincidencia si la descripción contiene el query
+                match = query_norm in desc_val.lower()
+                
+            if match:
+                results.append({
+                    "code": code_val,
+                    "description": desc_val,
+                    "price": price_float
+                })
+    finally:
+        wb.close()
+        
+    return results
+
