@@ -3508,8 +3508,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             doc_data = pending_doc["parsed_data"]
             if product:
                 found = False
+                p_code = (product["code"] or "").strip().upper()
+                is_generic = p_code in ("", "S/C", "S.C.", "S/D", "S.D.", "SIN CODIGO", "SIN CÓDIGO")
                 for it in doc_data["items"]:
-                    if it.get("code") == product["code"]:
+                    if it.get("code") == product["code"] and (not is_generic or it.get("desc") == product["description"]):
                         it["qty"] = float(it["qty"]) + qty_val
                         it["totalUsd"] = it["qty"] * float(it["priceUsd"])
                         found = True
