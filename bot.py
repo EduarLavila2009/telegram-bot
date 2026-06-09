@@ -185,6 +185,7 @@ async def _deny(update: Update, context: ContextTypes.DEFAULT_TYPE = None) -> No
 
 
 async def _handle_solicitar_access_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import html
     msg = update.effective_message
     if not msg:
         return
@@ -207,17 +208,19 @@ async def _handle_solicitar_access_flow(update: Update, context: ContextTypes.DE
         ]
     ])
     name_str = f"{u.first_name} {u.last_name or ''}".strip()
-    user_mention = f"[{name_str}](tg://user?id={u.id})"
+    name_escaped = html.escape(name_str)
+    username_escaped = html.escape(u.username) if u.username else "sin_username"
+    user_mention = f'<a href="tg://user?id={u.id}">{name_escaped}</a>'
     try:
         await context.bot.send_message(
             chat_id=admin_id,
-            text=f"🔔 *Nueva solicitud de acceso al bot:*\n\n"
-                 f"• *Usuario:* {user_mention}\n"
-                 f"• *Nombre:* {name_str}\n"
-                 f"• *ID de Telegram:* `{u.id}`\n"
-                 f"• *Username:* @{u.username or 'sin_username'}\n\n"
+            text=f"🔔 <b>Nueva solicitud de acceso al bot:</b>\n\n"
+                 f"• <b>Usuario:</b> {user_mention}\n"
+                 f"• <b>Nombre:</b> {name_escaped}\n"
+                 f"• <b>ID de Telegram:</b> <code>{u.id}</code>\n"
+                 f"• <b>Username:</b> @{username_escaped}\n\n"
                  f"¿Deseas autorizar a este usuario?",
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=kb
         )
         await msg.reply_text(
@@ -237,6 +240,7 @@ async def _handle_solicitar_access_flow(update: Update, context: ContextTypes.DE
 
 
 async def handle_user_request_access_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    import html
     q = update.callback_query
     if not q:
         return
@@ -253,17 +257,19 @@ async def handle_user_request_access_callback(update: Update, context: ContextTy
         ]
     ])
     name_str = f"{u.first_name} {u.last_name or ''}".strip()
-    user_mention = f"[{name_str}](tg://user?id={u.id})"
+    name_escaped = html.escape(name_str)
+    username_escaped = html.escape(u.username) if u.username else "sin_username"
+    user_mention = f'<a href="tg://user?id={u.id}">{name_escaped}</a>'
     try:
         await context.bot.send_message(
             chat_id=admin_id,
-            text=f"🔔 *Nueva solicitud de acceso al bot:*\n\n"
-                 f"• *Usuario:* {user_mention}\n"
-                 f"• *Nombre:* {name_str}\n"
-                 f"• *ID de Telegram:* `{u.id}`\n"
-                 f"• *Username:* @{u.username or 'sin_username'}\n\n"
+            text=f"🔔 <b>Nueva solicitud de acceso al bot:</b>\n\n"
+                 f"• <b>Usuario:</b> {user_mention}\n"
+                 f"• <b>Nombre:</b> {name_escaped}\n"
+                 f"• <b>ID de Telegram:</b> <code>{u.id}</code>\n"
+                 f"• <b>Username:</b> @{username_escaped}\n\n"
                  f"¿Deseas autorizar a este usuario?",
-            parse_mode="Markdown",
+            parse_mode="HTML",
             reply_markup=kb
         )
         await q.edit_message_text(
@@ -5969,6 +5975,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             return
 
         elif action == "admin_req_role":
+            import html
             days = int(parts[2])
             role = parts[3]
             
@@ -5995,14 +6002,16 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             role_lbl = "Tributos Only" if role == "tributos_only" else ("Cotizaciones Only" if role == "cotizaciones_only" else "Acceso Total")
             plan_lbl = "Prueba (5 días)" if days == 5 else ("Plan Estándar (30 días)" if days == 30 else "Plan Premium (3 meses)")
 
+            name_escaped = html.escape(name)
+            username_escaped = html.escape(username_str)
             await msg.edit_text(
-                f"✅ *¡Usuario Autorizado con Éxito!*\n\n"
-                f"• *Nombre:* {name} ({username_str})\n"
-                f"• *ID:* `{target_uid}`\n"
-                f"• *Plan:* {plan_lbl}\n"
-                f"• *Rol:* {role_lbl}\n"
-                f"• *Vencimiento:* `{exp_date}`",
-                parse_mode="Markdown"
+                f"✅ <b>¡Usuario Autorizado con Éxito!</b>\n\n"
+                f"• <b>Nombre:</b> {name_escaped} ({username_escaped})\n"
+                f"• <b>ID:</b> <code>{target_uid}</code>\n"
+                f"• <b>Plan:</b> {plan_lbl}\n"
+                f"• <b>Rol:</b> {role_lbl}\n"
+                f"• <b>Vencimiento:</b> <code>{exp_date}</code>",
+                parse_mode="HTML"
             )
 
             # Notificar al usuario
