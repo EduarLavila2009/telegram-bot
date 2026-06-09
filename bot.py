@@ -163,19 +163,119 @@ def _allowed(update: Update) -> bool:
     return user_manager.is_subscription_active(u.id)
 
 
-async def _deny(update: Update) -> None:
+async def _deny(update: Update, context: ContextTypes.DEFAULT_TYPE = None) -> None:
     msg = update.effective_message
     u = update.effective_user
     if msg:
         if u is not None:
+            kb = None
+            if context:
+                kb = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📥 Solicitar Acceso", callback_data="user_request_access")
+                ]])
             await msg.reply_text(
                 "❌ *Acceso no autorizado / Suscripción Expirada*\n\n"
                 f"Tu ID de Telegram es: `{u.id}`\n\n"
                 "Por favor, ponte en contacto con el administrador para solicitar acceso o renovar tu plan.",
-                parse_mode="Markdown"
+                parse_mode="Markdown",
+                reply_markup=kb
             )
         else:
             await msg.reply_text("Acceso no autorizado.")
+
+
+async def _handle_solicitar_access_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if not msg:
+        return
+    u = update.effective_user
+    if not u:
+        return
+    
+    if _allowed(update):
+        await msg.reply_text(
+            "✅ Ya tienes acceso activo y autorizado al bot. ¡Usa el menú inferior para navegar!",
+            reply_markup=_main_keyboard(u.id)
+        )
+        return
+        
+    admin_id = config.ALLOWED_USER_ID
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Autorizar", callback_data=f"admin_req_start:{u.id}"),
+            InlineKeyboardButton("❌ Rechazar", callback_data=f"admin_req_reject:{u.id}")
+        ]
+    ])
+    name_str = f"{u.first_name} {u.last_name or ''}".strip()
+    user_mention = f"[{name_str}](tg://user?id={u.id})"
+    try:
+        await context.bot.send_message(
+            chat_id=admin_id,
+            text=f"🔔 *Nueva solicitud de acceso al bot:*\n\n"
+                 f"• *Usuario:* {user_mention}\n"
+                 f"• *Nombre:* {name_str}\n"
+                 f"• *ID de Telegram:* `{u.id}`\n"
+                 f"• *Username:* @{u.username or 'sin_username'}\n\n"
+                 f"¿Deseas autorizar a este usuario?",
+            parse_mode="Markdown",
+            reply_markup=kb
+        )
+        await msg.reply_text(
+            "📨 *Solicitud de Acceso Enviada*\n\n"
+            "Tu solicitud ha sido recibida por el administrador. "
+            "Te enviaremos una notificación automática por este chat cuando sea aprobada.",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Error al enviar solicitud de acceso al admin: {e}")
+        await msg.reply_text(
+            "❌ *Error al enviar solicitud*\n\n"
+            "No se pudo enviar la solicitud al administrador en este momento. "
+            "Por favor, intenta de nuevo más tarde o contacta al administrador directamente.",
+            parse_mode="Markdown"
+        )
+
+
+async def handle_user_request_access_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    if not q:
+        return
+    await q.answer()
+    u = update.effective_user
+    if not u:
+        return
+        
+    admin_id = config.ALLOWED_USER_ID
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Autorizar", callback_data=f"admin_req_start:{u.id}"),
+            InlineKeyboardButton("❌ Rechazar", callback_data=f"admin_req_reject:{u.id}")
+        ]
+    ])
+    name_str = f"{u.first_name} {u.last_name or ''}".strip()
+    user_mention = f"[{name_str}](tg://user?id={u.id})"
+    try:
+        await context.bot.send_message(
+            chat_id=admin_id,
+            text=f"🔔 *Nueva solicitud de acceso al bot:*\n\n"
+                 f"• *Usuario:* {user_mention}\n"
+                 f"• *Nombre:* {name_str}\n"
+                 f"• *ID de Telegram:* `{u.id}`\n"
+                 f"• *Username:* @{u.username or 'sin_username'}\n\n"
+                 f"¿Deseas autorizar a este usuario?",
+            parse_mode="Markdown",
+            reply_markup=kb
+        )
+        await q.edit_message_text(
+            "📨 *Solicitud de Acceso Enviada*\n\n"
+            "Tu solicitud ha sido recibida por el administrador. "
+            "Te enviaremos una notificación automática por este chat cuando sea aprobada.",
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Error al procesar callback de solicitud de acceso: {e}")
+        await q.edit_message_text("❌ Ocurrió un error al enviar la solicitud. Intenta de nuevo más tarde.")
+
 
 
 def _is_public_or_sufevica(update: Update) -> bool:
@@ -2627,8 +2727,12 @@ async def mi_id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if context.args and context.args[0] == "solicitar":
+        await _handle_solicitar_access_flow(update, context)
+        return
+
     if not _allowed(update):
-        await _deny(update)
+        await _deny(update, context)
         return
     context.user_data["voice_mode"] = False
     context.user_data.pop("pending_doc", None)
@@ -5791,7 +5895,14 @@ async def _show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         [InlineKeyboardButton("➕ Registrar Usuario", callback_data="admin_new_start")],
         [InlineKeyboardButton("❌ Cerrar Panel", callback_data="admin_close")]
     ])
-    text = "⚙️ *Panel de Administración*\n\nSelecciona una opción para gestionar suscripciones, roles y cuotas de uso:"
+    bot_username = context.bot.username
+    request_link = f"https://t.me/{bot_username}?start=solicitar"
+    
+    text = (
+        "⚙️ *Panel de Administración*\n\n"
+        "Selecciona una opción para gestionar suscripciones, roles y cuotas de uso:\n\n"
+        f"🔗 *Enlace directo de solicitud:*\n`{request_link}`"
+    )
     
     if msg_to_edit:
         await msg_to_edit.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -5819,6 +5930,113 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await _show_admin_panel(update, context, msg_to_edit=msg)
         return
         
+    elif data.startswith("admin_req_"):
+        parts = data.split(":")
+        action = parts[0]
+        target_uid = parts[1]
+        
+        if action == "admin_req_start":
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📅 Prueba (5 días)", callback_data=f"admin_req_plan:{target_uid}:5")],
+                [InlineKeyboardButton("📅 Plan Estándar (30 días)", callback_data=f"admin_req_plan:{target_uid}:30")],
+                [InlineKeyboardButton("📅 Plan Premium (3 meses)", callback_data=f"admin_req_plan:{target_uid}:90")],
+                [InlineKeyboardButton("❌ Rechazar Solicitud", callback_data=f"admin_req_reject:{target_uid}")]
+            ])
+            await msg.edit_text(
+                f"👤 *Autorizar Usuario (ID: {target_uid})*\n\n"
+                f"Paso 1: Selecciona la duración del plan:",
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+            return
+
+        elif action == "admin_req_plan":
+            days = parts[2]
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏛️ Tributos Only", callback_data=f"admin_req_role:{target_uid}:{days}:tributos_only")],
+                [InlineKeyboardButton("📋 Cotizaciones Only", callback_data=f"admin_req_role:{target_uid}:{days}:cotizaciones_only")],
+                [InlineKeyboardButton("⭐ Acceso Total", callback_data=f"admin_req_role:{target_uid}:{days}:full_access")],
+                [InlineKeyboardButton("🔙 Atrás", callback_data=f"admin_req_start:{target_uid}")]
+            ])
+            plan_name = "Prueba (5 días)" if days == "5" else ("Plan Estándar (30 días)" if days == "30" else "Plan Premium (3 meses)")
+            await msg.edit_text(
+                f"👤 *Autorizar Usuario (ID: {target_uid})*\n\n"
+                f"• *Plan seleccionado:* {plan_name}\n\n"
+                f"Paso 2: Selecciona los privilegios (rol):",
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+            return
+
+        elif action == "admin_req_role":
+            days = int(parts[2])
+            role = parts[3]
+            
+            try:
+                chat = await context.bot.get_chat(int(target_uid))
+                name = f"{chat.first_name} {chat.last_name or ''}".strip()
+                username_str = f"@{chat.username}" if chat.username else "sin username"
+            except Exception:
+                name = "Usuario Solicitante"
+                username_str = "desconocido"
+
+            # Calcular fecha de vencimiento
+            exp_date = (date.today() + timedelta(days=days)).strftime("%Y-%m-%d")
+            
+            # Registrar usuario en la base de datos
+            user_manager.register_user(
+                user_id=target_uid,
+                name=name,
+                role=role,
+                expiration_date=exp_date,
+                limit_ops=-1
+            )
+
+            role_lbl = "Tributos Only" if role == "tributos_only" else ("Cotizaciones Only" if role == "cotizaciones_only" else "Acceso Total")
+            plan_lbl = "Prueba (5 días)" if days == 5 else ("Plan Estándar (30 días)" if days == 30 else "Plan Premium (3 meses)")
+
+            await msg.edit_text(
+                f"✅ *¡Usuario Autorizado con Éxito!*\n\n"
+                f"• *Nombre:* {name} ({username_str})\n"
+                f"• *ID:* `{target_uid}`\n"
+                f"• *Plan:* {plan_lbl}\n"
+                f"• *Rol:* {role_lbl}\n"
+                f"• *Vencimiento:* `{exp_date}`",
+                parse_mode="Markdown"
+            )
+
+            # Notificar al usuario
+            try:
+                await context.bot.send_message(
+                    chat_id=int(target_uid),
+                    text=f"🎉 *¡Tu solicitud de acceso ha sido aprobada!*\n\n"
+                         f"El administrador te ha concedido acceso con los siguientes detalles:\n\n"
+                         f"• *Plan:* {plan_lbl}\n"
+                         f"• *Vencimiento:* `{exp_date}`\n"
+                         f"• *Privilegios:* {role_lbl}\n\n"
+                         f"Presiona /start para activar el menú y comenzar a usar el bot.",
+                    parse_mode="Markdown",
+                    reply_markup=_main_keyboard(target_uid)
+                )
+            except Exception as e:
+                logger.error(f"No se pudo notificar al usuario {target_uid}: {e}")
+            return
+
+        elif action == "admin_req_reject":
+            await msg.edit_text(
+                f"❌ *Solicitud Rechazada*\n\nSe ha denegado la solicitud de acceso para el ID `{target_uid}`.",
+                parse_mode="Markdown"
+            )
+            try:
+                await context.bot.send_message(
+                    chat_id=int(target_uid),
+                    text="❌ *Solicitud Denegada*\n\nTu solicitud para acceder al bot ha sido rechazada por el administrador.",
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.error(f"No se pudo enviar notificación de rechazo al usuario {target_uid}: {e}")
+            return
+
     elif data == "admin_close":
         try:
             await msg.delete()
@@ -6347,6 +6565,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(handle_share_email_callback, pattern=r"^share_email$"))
     app.add_handler(CallbackQueryHandler(handle_share_cancel_callback, pattern=r"^share_cancel$"))
     app.add_handler(CallbackQueryHandler(handle_ocr_callback, pattern=r"^ocr_"))
+    app.add_handler(CallbackQueryHandler(handle_user_request_access_callback, pattern=r"^user_request_access$"))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
