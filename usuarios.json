@@ -1,0 +1,12 @@
+{
+    "users": {
+        "1091456221": {
+            "name": "Administrador Principal",
+            "role": "admin",
+            "status": "active",
+            "expiration_date": "never",
+            "limit_ops": -1,
+            "consumed_ops": 0
+        }
+    }
+}

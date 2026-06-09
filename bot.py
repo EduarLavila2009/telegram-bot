@@ -9,7 +9,7 @@ import re
 import tempfile
 import time
 import unicodedata
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -20,6 +20,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Cont
 from . import config
 from . import excel_store
 from . import tributario_engine
+from . import user_manager
 from .factura_compra_parse import parse_factura_compra_text, _take_eol_label, _normalize_rif
 from .transcription import transcribe_audio_file
 from openpyxl import load_workbook
@@ -76,12 +77,66 @@ COTI_BUTTON = "📋 Nueva Cotización"
 NOTA_BUTTON = "📦 Nueva Nota de Entrega"
 RETENTION_RATE = Decimal("0.75")
 
+# Nuevos botones de menú y submenú
+TRIBUTOS_BUTTON = "🏛️ Tributos"
+SUBMENU_CARGAR_FACTURA = "📥 Cargar Facturas"
+SUBMENU_RETENCION_RECIBIDA = "🧾 Retenciones Recibidas"
+SUBMENU_REPORTE_Z = "📊 Reportes Z"
+SUBMENU_FACTURA_EMITIDA = "📈 Facturas Emitidas"
+SUBMENU_GENERAR_RETENCION = "✍️ Generar Retención"
+SUBMENU_GENERAR_REPORTES = "📋 Generar Reportes"
+SUBMENU_VOLVER = "🔙 Volver al Menú Principal"
 
-def _main_keyboard() -> ReplyKeyboardMarkup:
+# Botones del submenú de reportes
+REPORT_IVA_BUTTON = "📉 Reporte IVA (Quincenal)"
+REPORT_RETENCIONES_BUTTON = "🧾 Reporte Retenciones Recibidas"
+REPORT_FACTURAS_BUTTON = "📥 Reporte Facturas Cargadas"
+REPORT_PENDIENTES_BUTTON = "⚠️ Facturas sin Retención"
+REPORT_VOLVER_TRIBUTOS = "🔙 Volver al Menú de Tributos"
+
+# Botón administrativo
+ADMIN_PANEL_BUTTON = "⚙️ Panel Admin"
+
+
+def _main_keyboard(user_id: int | str = "") -> ReplyKeyboardMarkup:
+    buttons = [
+        [KeyboardButton(TRIBUTOS_BUTTON)],
+        [KeyboardButton(COTI_BUTTON), KeyboardButton(NOTA_BUTTON)],
+        [KeyboardButton(VOICE_BUTTON), KeyboardButton(VOICE_CANCEL_BUTTON)],
+    ]
+    if user_id:
+        user = user_manager.get_user(user_id)
+        if user and user.get("role") == "admin":
+            buttons.append([KeyboardButton(ADMIN_PANEL_BUTTON)])
+            
+    return ReplyKeyboardMarkup(
+        keyboard=buttons,
+        resize_keyboard=True,
+        one_time_keyboard=False,
+    )
+
+
+def _tributos_submenu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(VOICE_BUTTON), KeyboardButton(VOICE_CANCEL_BUTTON)],
-            [KeyboardButton(COTI_BUTTON), KeyboardButton(NOTA_BUTTON)],
+            [KeyboardButton(SUBMENU_CARGAR_FACTURA), KeyboardButton(SUBMENU_RETENCION_RECIBIDA)],
+            [KeyboardButton(SUBMENU_REPORTE_Z), KeyboardButton(SUBMENU_FACTURA_EMITIDA)],
+            [KeyboardButton(SUBMENU_GENERAR_RETENCION), KeyboardButton(SUBMENU_GENERAR_REPORTES)],
+            [KeyboardButton(SUBMENU_VOLVER)],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+    )
+
+
+def _reportes_submenu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(REPORT_IVA_BUTTON)],
+            [KeyboardButton(REPORT_RETENCIONES_BUTTON)],
+            [KeyboardButton(REPORT_FACTURAS_BUTTON)],
+            [KeyboardButton(REPORT_PENDIENTES_BUTTON)],
+            [KeyboardButton(REPORT_VOLVER_TRIBUTOS)],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
@@ -90,7 +145,22 @@ def _main_keyboard() -> ReplyKeyboardMarkup:
 
 def _allowed(update: Update) -> bool:
     u = update.effective_user
-    return u is not None and u.id == config.ALLOWED_USER_ID
+    if u is None:
+        return False
+    # El administrador principal (config.ALLOWED_USER_ID) siempre está permitido y tiene rol admin
+    if u.id == config.ALLOWED_USER_ID:
+        # Asegurar que esté registrado en el JSON como admin
+        user_manager.register_user(
+            user_id=u.id,
+            name="Administrador Principal",
+            role="admin",
+            expiration_date="never",
+            limit_ops=-1
+        )
+        return True
+    
+    # Comprobar si tiene suscripción activa
+    return user_manager.is_subscription_active(u.id)
 
 
 async def _deny(update: Update) -> None:
@@ -99,13 +169,66 @@ async def _deny(update: Update) -> None:
     if msg:
         if u is not None:
             await msg.reply_text(
-                "Acceso no autorizado.\n"
-                f"Tu id de Telegram es: {u.id}\n"
-                "Si este bot es tuyo, copia ese número en TELEGRAM_ALLOWED_USER_ID del .env "
-                "y reinicia el bot."
+                "❌ *Acceso no autorizado / Suscripción Expirada*\n\n"
+                f"Tu ID de Telegram es: `{u.id}`\n\n"
+                "Por favor, ponte en contacto con el administrador para solicitar acceso o renovar tu plan.",
+                parse_mode="Markdown"
             )
         else:
             await msg.reply_text("Acceso no autorizado.")
+
+
+def _is_public_or_sufevica(update: Update) -> bool:
+    is_channel = update.channel_post is not None or update.edited_channel_post is not None
+    return is_channel or _is_sufevica_chat(update)
+
+
+def _check_permission(update: Update, module: str) -> bool:
+    if _is_public_or_sufevica(update):
+        return True
+    u = update.effective_user
+    if u is None:
+        return False
+    if u.id == config.ALLOWED_USER_ID:
+        return True
+        
+    user = user_manager.get_user(u.id)
+    if not user:
+        return False
+    role = user.get("role")
+    if role == "admin":
+        return True
+    if module == "tributos":
+        return role in ("full_access", "tributos_only")
+    if module == "cotizaciones":
+        return role in ("full_access", "cotizaciones_only")
+    return False
+
+
+async def _check_and_consume_quota(update: Update) -> bool:
+    if _is_public_or_sufevica(update):
+        return True
+    u = update.effective_user
+    if u is None:
+        return False
+    if u.id == config.ALLOWED_USER_ID:
+        return True
+    user = user_manager.get_user(u.id)
+    if user and user.get("role") == "admin":
+        return True
+        
+    if not user_manager.has_quota(u.id):
+        msg = update.effective_message
+        if msg:
+            await msg.reply_text(
+                "⚠️ *Límite de operaciones alcanzado*\n\n"
+                "Has consumido tu límite mensual de operaciones permitidas en tu plan.\n"
+                "Ponte en contacto con el administrador para solicitar una ampliación o renovación de cuota.",
+                parse_mode="Markdown"
+            )
+        return False
+    user_manager.increment_usage(u.id)
+    return True
 
 async def _notify_same_source_channel(
     update: Update,
@@ -1774,6 +1897,9 @@ async def _generate_document_from_parsed_data(
     if not msg:
         return
         
+    if not await _check_and_consume_quota(update):
+        return
+        
     doc_type = doc_data["docType"]
     doc_num = doc_data["docNumber"]
     title_up = "COTIZACIÓN" if doc_type == "cotizacion" else "NOTA DE ENTREGA"
@@ -1880,6 +2006,11 @@ async def _process_intent(
     msg = update.effective_message
     if not msg:
         return
+        
+    if not _check_permission(update, "tributos"):
+        await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
+        return
+
     is_channel = update.channel_post is not None or update.edited_channel_post is not None
     emit_docs = _parse_emitir_retencion_request(text)
     if emit_docs is not None:
@@ -1890,6 +2021,8 @@ async def _process_intent(
     if islr_data is None:
         islr_data = _parse_retencion_islr_from_any_text(text)
     if islr_data is not None:
+        if not await _check_and_consume_quota(update):
+            return
         try:
             emission_date = _parse_user_date(islr_data["fecha_emision"]) or date.today()
             monthly_path = excel_store.monthly_retencion_islr_path(config.RETENCIONES_ISLR_DIR, emission_date)
@@ -1933,6 +2066,8 @@ async def _process_intent(
     if ret_data is None:
         ret_data = _parse_retencion_from_any_text(text)
     if ret_data is not None:
+        if not await _check_and_consume_quota(update):
+            return
         try:
             inserted = excel_store.append_record(
                 config.EXCEL_PATH,
@@ -1973,6 +2108,8 @@ async def _process_intent(
     # Intentar primero el nuevo formato de Reporte Z
     z_nuevo = _parse_reporte_z_nuevo(text)
     if z_nuevo is not None:
+        if not await _check_and_consume_quota(update):
+            return
         try:
             inserted = excel_store.append_reporte_z_nuevo(
                 config.REPORTES_Z_PATH,
@@ -2009,6 +2146,8 @@ async def _process_intent(
 
     v_data = _parse_venta_o_reportez(text)
     if v_data is not None:
+        if not await _check_and_consume_quota(update):
+            return
         try:
             b_dec = excel_store.parse_amount_ves_string(v_data["base_imponible"])
             i_dec = excel_store.parse_amount_ves_string(v_data["iva"])
@@ -2078,6 +2217,8 @@ async def _process_intent(
 
     fc = parse_factura_compra_text(text)
     if fc is not None:
+        if not await _check_and_consume_quota(update):
+            return
         is_sale = False
         if fc.proveedor_rif:
             clean_rif = re.sub(r"\D", "", str(fc.proveedor_rif))
@@ -2304,6 +2445,9 @@ async def _emitir_retencion_generate(
     pending = context.user_data.get("pending_emit_ret")
     if not msg or not pending:
         return
+        
+    if not await _check_and_consume_quota(update):
+        return
     docs = list(pending.get("docs", []))
     items = excel_store.load_facturas_by_document_numbers(config.FACTURAS_RECIBIDAS_PATH, docs)
     if not items:
@@ -2489,25 +2633,10 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["voice_mode"] = False
     if update.message:
         await update.message.reply_text(
-            "Bot financiero listo.\n"
-            "• /tributos: Consulta interactiva en tiempo real del IVA por pagar, retenciones y anticipos de la quincena.\n"
-            "• /cotizacion: Abre el Módulo de Cotizaciones/Presupuestos en modo Cotización.\n"
-            "• /nota: Abre el Módulo de Notas de Entrega/Despachos en modo Nota de Entrega.\n"
-            "• Texto o nota de voz: reconozco ordenes y registro en Excel.\n"
-            "• Botón: pulsa «Activar comando de voz» y luego envía tu nota de voz.\n"
-            "• Escribe: «resumen de hoy», «enviar excel» (retenciones), "
-            "«enviar excel facturas compra»,\n"
-            "  «retenciones recibidas del 01/05/2026 al 31/05/2026 en pdf/excel»,\n"
-            "  «Emitir retencion de facturas:06949950|06949951»,\n"
-            "  «tributos» o «iva por pagar»,\n"
-            "  o «registrar retencion, fecha:..., comprobante:..., rif:..., iva retenido:...».\n"
-            "• Registrar Ventas o Reportes Z: Escribe o di por voz:\n"
-            "  «registrar venta, factura:12, fecha:25/05/2026, cliente:ABC, rif:J-12345678-9, base:1000, iva:160»\n"
-            "  «reporte z, fecha:26/05/2026, numero:0023, base:5000»\n"
-            "• Facturas de compra (proveedor -> SUFEVICA): pegar el texto; se guardan en "
-            "FACTURAS-RECIBIDAS-NUEVO.xlsx (Subtotal, IVA, Total en columnas propias).\n"
-            "• Si ves «Acceso no autorizado», envia /mi_id y revisa .env.",
-            reply_markup=_main_keyboard(),
+            "🏛️ *Bot Financiero* 🏛️\n\n"
+            "Bienvenido. Selecciona una opción del menú de abajo para comenzar:",
+            reply_markup=_main_keyboard(update.effective_user.id),
+            parse_mode="Markdown"
         )
 
 
@@ -2987,6 +3116,14 @@ async def handle_ocr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     q = update.callback_query
     if not q:
         return
+        
+    if not _allowed(update):
+        await q.answer("❌ Acceso no autorizado / Suscripción Expirada.", show_alert=True)
+        return
+    if not _check_permission(update, "tributos"):
+        await q.answer("❌ No tienes privilegios para realizar operaciones de Tributos.", show_alert=True)
+        return
+        
     await q.answer()
     data = (q.data or "").strip()
     msg = q.message
@@ -3307,7 +3444,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if update.message:
             await update.message.reply_text(
                 "Comando de voz procesado. Si quieres otro, pulsa de nuevo «Activar comando de voz».",
-                reply_markup=_main_keyboard(),
+                reply_markup=_main_keyboard(update.effective_user.id),
             )
 
 
@@ -3332,6 +3469,232 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     context.user_data.setdefault("voice_mode", False)
+    
+    # Interceptar entradas de texto del administrador para registro de usuarios
+    admin_state = context.user_data.get("admin_state")
+    if admin_state:
+        if admin_state == "awaiting_new_user_id":
+            input_val = text.strip()
+            if not input_val.isdigit():
+                await msg.reply_text("❌ El ID de Telegram debe ser un número entero. Escribe un ID válido o envía /start para cancelar:")
+                return
+            context.user_data["admin_new_user"]["id"] = input_val
+            context.user_data["admin_state"] = "awaiting_new_user_name"
+            await msg.reply_text(
+                f"ID de Telegram guardado: `{input_val}`.\n\n"
+                "Ahora escribe el *Nombre / Descripción* de este usuario (ej: `Carlos Gómez` o `Empresa ABC`):",
+                parse_mode="Markdown"
+            )
+            return
+            
+        elif admin_state == "awaiting_new_user_name":
+            input_val = text.strip()
+            context.user_data["admin_new_user"]["name"] = input_val
+            context.user_data.pop("admin_state", None)
+            
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏛️ Tributos Only", callback_data="admin_new_role:tributos_only")],
+                [InlineKeyboardButton("📋 Cotizaciones Only", callback_data="admin_new_role:cotizaciones_only")],
+                [InlineKeyboardButton("⭐ Acceso Total", callback_data="admin_new_role:full_access")],
+                [InlineKeyboardButton("❌ Cancelar", callback_data="admin_main")]
+            ])
+            await msg.reply_text(
+                f"Nombre guardado: *{input_val}*\n\n"
+                "🛡️ Selecciona el *Rol* para el usuario:",
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+            return
+
+    # Interceptar entrada de texto del botón "Generar Retención"
+    if context.user_data.get("awaiting_emit_docs"):
+        context.user_data.pop("awaiting_emit_docs", None)
+        emit_docs = _parse_emitir_retencion_request(text)
+        if emit_docs is None:
+            emit_docs = [x.strip() for x in re.split(r'[|,\s]+', text) if x.strip()]
+            
+        if not emit_docs:
+            await msg.reply_text("❌ No se detectaron números de factura válidos. Operación cancelada.")
+            return
+            
+        await _start_emitir_retencion_flow(update, context, emit_docs)
+        return
+
+    # Botones principales e interactivos
+    if text == ADMIN_PANEL_BUTTON:
+        user = user_manager.get_user(update.effective_user.id)
+        if user and user.get("role") == "admin":
+            await _show_admin_panel(update, context)
+        else:
+            await msg.reply_text("❌ No tienes privilegios para acceder al Panel de Administración.")
+        return
+
+    elif text == TRIBUTOS_BUTTON:
+        if not _check_permission(update, "tributos"):
+            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
+            return
+        await msg.reply_text(
+            "🏛️ *Módulo de Tributos y Control Fiscal*\n\n"
+            "Selecciona una de las opciones de abajo:",
+            reply_markup=_tributos_submenu_keyboard(),
+            parse_mode="Markdown"
+        )
+        return
+
+    elif text == SUBMENU_VOLVER:
+        await msg.reply_text(
+            "🏛️ *Menú Principal*\n\n"
+            "Selecciona una opción del menú para continuar:",
+            reply_markup=_main_keyboard(update.effective_user.id),
+            parse_mode="Markdown"
+        )
+        return
+
+    elif text == REPORT_VOLVER_TRIBUTOS:
+        if not _check_permission(update, "tributos"):
+            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
+            return
+        await msg.reply_text(
+            "🏛️ *Módulo de Tributos y Control Fiscal*\n\n"
+            "Selecciona una de las opciones de abajo:",
+            reply_markup=_tributos_submenu_keyboard(),
+            parse_mode="Markdown"
+        )
+        return
+
+    elif text == SUBMENU_CARGAR_FACTURA:
+        if not _check_permission(update, "tributos"):
+            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
+            return
+        await msg.reply_text(
+            "📥 *Cargar Facturas Recibidas (Compras)*\n\n"
+            "Puedes cargar facturas de las siguientes formas:\n"
+            "1️⃣ Envía la imagen o foto de la factura física.\n"
+            "2️⃣ Envía el archivo PDF o XML de la factura digital.\n"
+            "3️⃣ Envía una nota de voz dictando los datos.\n"
+            "4️⃣ Pega el texto copiado de la factura."
+        )
+        return
+
+    elif text == SUBMENU_RETENCION_RECIBIDA:
+        if not _check_permission(update, "tributos"):
+            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
+            return
+        await msg.reply_text(
+            "🧾 *Cargar Retenciones Recibidas (Clientes)*\n\n"
+            "Puedes registrar retenciones de IVA/ISLR de las siguientes formas:\n"
+            "1️⃣ Envía la imagen/foto o PDF del comprobante de retención.\n"
+            "2️⃣ Escribe los datos con el formato: `registrar retencion, fecha: DD/MM/AAAA, comprobante: XXXXXX, ...`"
+        )
+        return
+
+    elif text == SUBMENU_REPORTE_Z:
+        if not _check_permission(update, "tributos"):
+            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
+            return
+        await msg.reply_text(
+            "📊 *Cargar Reporte Z de Ventas Diarias*\n\n"
+            "Envía la imagen del reporte Z impreso de tu máquina fiscal, o escribe sus datos de ventas directamente en texto."
+        )
+        return
+
+    elif text == SUBMENU_FACTURA_EMITIDA:
+        if not _check_permission(update, "tributos"):
+            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
+            return
+        await msg.reply_text(
+            "📈 *Cargar Factura Emitida (Ventas)*\n\n"
+            "Registra tus facturas de ventas emitidas:\n"
+            "1️⃣ Envía la foto o el PDF de la factura emitida.\n"
+            "2️⃣ Escribe los datos correspondientes en texto."
+        )
+        return
+
+    elif text == SUBMENU_GENERAR_RETENCION:
+        if not _check_permission(update, "tributos"):
+            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
+            return
+        await msg.reply_text(
+            "✍️ *Generar Comprobante de Retención de IVA*\n\n"
+            "Por favor, escribe el o los números de factura (separados por coma o barra vertical `|`) "
+            "a las cuales les deseas emitir el comprobante (ej: `00007553` o `00007553|00007554`):"
+        )
+        context.user_data["awaiting_emit_docs"] = True
+        return
+
+    elif text == SUBMENU_GENERAR_REPORTES:
+        if not _check_permission(update, "tributos"):
+            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
+            return
+        await msg.reply_text(
+            "📋 *Generación de Reportes Tributarios y Fiscales*\n\n"
+            "Selecciona qué reporte deseas generar:",
+            reply_markup=_reportes_submenu_keyboard(),
+            parse_mode="Markdown"
+        )
+        return
+
+    elif text == REPORT_IVA_BUTTON:
+        if not _check_permission(update, "tributos"):
+            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
+            return
+        today = date.today()
+        fortnight = 1 if today.day <= 15 else 2
+        report = tributario_engine.get_compromiso_tributario_report(today.year, today.month, fortnight)
+        text_report = format_tributos_report(report)
+        kb = _tributos_keyboard(today.year, today.month, fortnight, _generate_short_summary(report))
+        await msg.reply_text(text_report, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    elif text == REPORT_RETENCIONES_BUTTON:
+        if not _check_permission(update, "tributos"):
+            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
+            return
+        await msg.reply_text(
+            "🧾 *Reporte de Retenciones Recibidas*\n\n"
+            "Para generar el reporte detallado, por favor escribe el rango de fechas en el siguiente formato:\n"
+            "`retenciones recibidas del DD/MM/AAAA al DD/MM/AAAA en pdf` (o `en excel`)"
+        )
+        return
+
+    elif text == REPORT_FACTURAS_BUTTON:
+        if not _check_permission(update, "tributos"):
+            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
+            return
+        await msg.reply_text(
+            "📥 *Reporte de Facturas Cargadas (Compras)*\n\n"
+            "Por favor, escribe el rango de fechas en el siguiente formato:\n"
+            "`compras del DD/MM/AAAA al DD/MM/AAAA`"
+        )
+        return
+
+    elif text == REPORT_PENDIENTES_BUTTON:
+        if not _check_permission(update, "tributos"):
+            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
+            return
+        status_msg = await msg.reply_text("⏳ *Buscando facturas cargadas sin comprobante de retención emitido...*", parse_mode="Markdown")
+        await _generate_pending_withholdings_report(update, context, status_msg)
+        return
+
+    elif text.lower().startswith("compras del "):
+        if not _check_permission(update, "tributos"):
+            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
+            return
+        pattern = r"compras\s+del\s+(\d{1,2}/\d{1,2}/\d{4})\s+al\s+(\d{1,2}/\d{1,2}/\d{4})"
+        match = re.match(pattern, text, re.IGNORECASE)
+        if not match:
+            await msg.reply_text("❌ Formato inválido. Usa: `compras del DD/MM/AAAA al DD/MM/AAAA`")
+            return
+        date_from_str, date_to_str = match.groups()
+        date_from = _parse_user_date(date_from_str)
+        date_to = _parse_user_date(date_to_str)
+        if not date_from or not date_to:
+            await msg.reply_text("❌ Fecha inválida. Usa el formato DD/MM/AAAA.")
+            return
+            
+        status_msg = await msg.reply_text("⏳ *Generando reporte de compras cargadas en el rango de fechas...*", parse_mode="Markdown")
+        await _generate_purchases_loaded_report(update, context, date_from, date_to, status_msg)
+        return
     
     share_doc = context.user_data.get("share_doc")
     if share_doc and share_doc.get("awaiting") == "client_email":
@@ -4417,6 +4780,14 @@ async def handle_share_email_callback(update: Update, context: ContextTypes.DEFA
     q = update.callback_query
     if not q:
         return
+        
+    if not _allowed(update):
+        await q.answer("❌ Acceso no autorizado / Suscripción Expirada.", show_alert=True)
+        return
+    if not _check_permission(update, "cotizaciones"):
+        await q.answer("❌ No tienes privilegios para realizar operaciones de Cotizaciones.", show_alert=True)
+        return
+        
     await q.answer()
     msg = q.message
     if not msg:
@@ -4450,6 +4821,14 @@ async def handle_share_cancel_callback(update: Update, context: ContextTypes.DEF
     q = update.callback_query
     if not q:
         return
+        
+    if not _allowed(update):
+        await q.answer("❌ Acceso no autorizado / Suscripción Expirada.", show_alert=True)
+        return
+    if not _check_permission(update, "cotizaciones"):
+        await q.answer("❌ No tienes privilegios para realizar operaciones de Cotizaciones.", show_alert=True)
+        return
+        
     await q.answer()
     msg = q.message
     if not msg:
@@ -4611,6 +4990,10 @@ async def cotizacion_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not msg:
         return
         
+    if not _check_permission(update, "cotizaciones"):
+        await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Cotizaciones.")
+        return
+        
     text_content = ""
     if msg.text:
         parts = msg.text.split(None, 1)
@@ -4629,6 +5012,10 @@ async def nota_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     msg = update.effective_message
     if not msg:
+        return
+        
+    if not _check_permission(update, "cotizaciones"):
+        await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Cotizaciones.")
         return
         
     text_content = ""
@@ -4714,6 +5101,14 @@ async def handle_cotizaciones_edit_callback(update: Update, context: ContextType
     q = update.callback_query
     if not q:
         return
+        
+    if not _allowed(update):
+        await q.answer("❌ Acceso no autorizado / Suscripción Expirada.", show_alert=True)
+        return
+    if not _check_permission(update, "cotizaciones"):
+        await q.answer("❌ No tienes privilegios para realizar operaciones de Cotizaciones.", show_alert=True)
+        return
+        
     await q.answer()
     data = (q.data or "").strip()
     msg = q.message
@@ -4969,6 +5364,14 @@ async def handle_builder_callback(update: Update, context: ContextTypes.DEFAULT_
     q = update.callback_query
     if not q:
         return
+        
+    if not _allowed(update):
+        await q.answer("❌ Acceso no autorizado / Suscripción Expirada.", show_alert=True)
+        return
+    if not _check_permission(update, "cotizaciones"):
+        await q.answer("❌ No tienes privilegios para realizar operaciones de Cotizaciones.", show_alert=True)
+        return
+        
     await q.answer()
     data = (q.data or "").strip()
     msg = q.message
@@ -5175,6 +5578,14 @@ async def handle_cotizaciones_callback(
     q = update.callback_query
     if not q:
         return
+        
+    if not _allowed(update):
+        await q.answer("❌ Acceso no autorizado / Suscripción Expirada.", show_alert=True)
+        return
+    if not _check_permission(update, "cotizaciones"):
+        await q.answer("❌ No tienes privilegios para realizar operaciones de Cotizaciones.", show_alert=True)
+        return
+        
     await q.answer()
     data = (q.data or "").strip()
     msg = q.message
@@ -5209,6 +5620,10 @@ async def tributos_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not _allowed(update):
         await _deny(update)
         return
+        
+    if not _check_permission(update, "tributos"):
+        await update.effective_message.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
+        return
     today = date.today()
     fortnight = 1 if today.day <= 15 else 2
     report = tributario_engine.get_compromiso_tributario_report(today.year, today.month, fortnight)
@@ -5227,6 +5642,14 @@ async def handle_tributos_callback(
     q = update.callback_query
     if not q:
         return
+        
+    if not _allowed(update):
+        await q.answer("❌ Acceso no autorizado / Suscripción Expirada.", show_alert=True)
+        return
+    if not _check_permission(update, "tributos"):
+        await q.answer("❌ No tienes privilegios para realizar operaciones de Tributos.", show_alert=True)
+        return
+        
     await q.answer()
     data = (q.data or "").strip()
     msg = q.message
@@ -5333,7 +5756,519 @@ async def handle_tributos_callback(
         await msg.reply_text("❌ Envío de reportes por correo cancelado.")
 
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, msg_to_edit=None) -> None:
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("👥 Listar Usuarios", callback_data="admin_list")],
+        [InlineKeyboardButton("➕ Registrar Usuario", callback_data="admin_new_start")],
+        [InlineKeyboardButton("❌ Cerrar Panel", callback_data="admin_close")]
+    ])
+    text = "⚙️ *Panel de Administración*\n\nSelecciona una opción para gestionar suscripciones, roles y cuotas de uso:"
+    
+    if msg_to_edit:
+        await msg_to_edit.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    else:
+        await update.effective_message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+
+
+async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    if not q:
+        return
+    await q.answer()
+    data = (q.data or "").strip()
+    msg = q.message
+    if not msg:
+        return
+        
+    user_id = update.effective_user.id
+    user = user_manager.get_user(user_id)
+    if not user or user.get("role") != "admin":
+        await q.answer("❌ No autorizado.", show_alert=True)
+        return
+        
+    if data == "admin_main":
+        await _show_admin_panel(update, context, msg_to_edit=msg)
+        return
+        
+    elif data == "admin_close":
+        try:
+            await msg.delete()
+        except Exception:
+            await msg.edit_text("⚙️ Panel de administración cerrado.")
+        return
+        
+    elif data == "admin_list":
+        users_data = user_manager.load_users().get("users", {})
+        if not users_data:
+            await msg.edit_text(
+                "No hay usuarios registrados.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="admin_main")]])
+            )
+            return
+            
+        text = "👥 *Usuarios Registrados:*\n\nSelecciona un usuario para ver detalles y editarlo:"
+        kb_list = []
+        for uid, u_info in users_data.items():
+            role_emoji = "🛡️" if u_info.get("role") == "admin" else "👤"
+            status_emoji = "✅" if u_info.get("status") == "active" else "🚫"
+            btn_text = f"{status_emoji} {role_emoji} {u_info.get('name')} ({uid})"
+            kb_list.append([InlineKeyboardButton(btn_text, callback_data=f"admin_edit:{uid}")])
+            
+        kb_list.append([InlineKeyboardButton("🔙 Volver", callback_data="admin_main")])
+        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb_list), parse_mode="Markdown")
+        return
+        
+    elif data.startswith("admin_edit:"):
+        uid = data.split(":")[1]
+        u_info = user_manager.get_user(uid)
+        if not u_info:
+            await msg.edit_text("Usuario no encontrado.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver al Listado", callback_data="admin_list")]]))
+            return
+            
+        status_lbl = "Activo ✅" if u_info.get("status") == "active" else "Suspendido 🚫"
+        limit_lbl = "Ilimitado" if u_info.get("limit_ops", -1) == -1 else f"{u_info.get('limit_ops')}"
+        
+        text = (
+            f"👤 *Gestión de Usuario*\n\n"
+            f"• *Nombre:* {u_info.get('name')}\n"
+            f"• *ID Telegram:* `{uid}`\n"
+            f"• *Rol:* `{u_info.get('role')}`\n"
+            f"• *Estado:* {status_lbl}\n"
+            f"• *Vencimiento:* `{u_info.get('expiration_date')}`\n"
+            f"• *Consumo:* `{u_info.get('consumed_ops', 0)} / {limit_lbl}` ops\n"
+        )
+        
+        is_self = str(uid) == str(user_id) or u_info.get("role") == "admin"
+        
+        kb_list = [
+            [InlineKeyboardButton("🔄 Renovar plan / Duración", callback_data=f"admin_edit_dur:{uid}")],
+            [InlineKeyboardButton("🛡️ Cambiar Rol", callback_data=f"admin_edit_role:{uid}")],
+            [InlineKeyboardButton("📊 Modificar Cuota", callback_data=f"admin_edit_quota:{uid}")],
+        ]
+        
+        if not is_self:
+            status_btn_text = "🚫 Suspender Suscripción" if u_info.get("status") == "active" else "✅ Activar Suscripción"
+            kb_list.append([InlineKeyboardButton(status_btn_text, callback_data=f"admin_edit_status:{uid}")])
+            
+        kb_list.append([InlineKeyboardButton("🔙 Volver a la Lista", callback_data="admin_list")])
+        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb_list), parse_mode="Markdown")
+        return
+        
+    elif data.startswith("admin_edit_status:"):
+        uid = data.split(":")[1]
+        u_info = user_manager.get_user(uid)
+        if u_info:
+            new_status = "suspended" if u_info.get("status") == "active" else "active"
+            user_manager.update_user_status(uid, new_status)
+            await q.answer(f"Estado actualizado a {new_status}")
+            q.data = f"admin_edit:{uid}"
+            await handle_admin_callback(update, context)
+        return
+        
+    elif data.startswith("admin_edit_role:"):
+        uid = data.split(":")[1]
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏛️ Tributos Only", callback_data=f"admin_edit_role_set:{uid}:tributos_only")],
+            [InlineKeyboardButton("📋 Cotizaciones Only", callback_data=f"admin_edit_role_set:{uid}:cotizaciones_only")],
+            [InlineKeyboardButton("⭐ Acceso Total", callback_data=f"admin_edit_role_set:{uid}:full_access")],
+            [InlineKeyboardButton("🔙 Atrás", callback_data=f"admin_edit:{uid}")]
+        ])
+        await msg.edit_text("🛡️ *Seleccionar nuevo rol para el usuario:*", reply_markup=kb, parse_mode="Markdown")
+        return
+        
+    elif data.startswith("admin_edit_role_set:"):
+        parts = data.split(":")
+        uid = parts[1]
+        new_role = parts[2]
+        user_manager.update_user_field(uid, "role", new_role)
+        await q.answer(f"Rol cambiado a {new_role}")
+        q.data = f"admin_edit:{uid}"
+        await handle_admin_callback(update, context)
+        return
+        
+    elif data.startswith("admin_edit_dur:"):
+        uid = data.split(":")[1]
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📅 +30 días", callback_data=f"admin_edit_dur_set:{uid}:30")],
+            [InlineKeyboardButton("📅 +90 días", callback_data=f"admin_edit_dur_set:{uid}:90")],
+            [InlineKeyboardButton("📅 +365 días", callback_data=f"admin_edit_dur_set:{uid}:365")],
+            [InlineKeyboardButton("📅 Sin Límite (never)", callback_data=f"admin_edit_dur_set:{uid}:never")],
+            [InlineKeyboardButton("🔙 Atrás", callback_data=f"admin_edit:{uid}")]
+        ])
+        await msg.edit_text("📅 *Selecciona vigencia de la suscripción:*", reply_markup=kb, parse_mode="Markdown")
+        return
+        
+    elif data.startswith("admin_edit_dur_set:"):
+        parts = data.split(":")
+        uid = parts[1]
+        days_str = parts[2]
+        if days_str == "never":
+            exp_date = "never"
+        else:
+            days = int(days_str)
+            exp_date = (date.today() + timedelta(days=days)).strftime("%Y-%m-%d")
+            
+        user_manager.update_user_field(uid, "expiration_date", exp_date)
+        user_manager.update_user_field(uid, "status", "active")
+        await q.answer(f"Vencimiento establecido en {exp_date}")
+        q.data = f"admin_edit:{uid}"
+        await handle_admin_callback(update, context)
+        return
+        
+    elif data.startswith("admin_edit_quota:"):
+        uid = data.split(":")[1]
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📊 50 operaciones", callback_data=f"admin_edit_quota_set:{uid}:50")],
+            [InlineKeyboardButton("📊 100 operaciones", callback_data=f"admin_edit_quota_set:{uid}:100")],
+            [InlineKeyboardButton("📊 Ilimitado", callback_data=f"admin_edit_quota_set:{uid}:-1")],
+            [InlineKeyboardButton("🔄 Resetear consumo a 0", callback_data=f"admin_edit_quota_set:{uid}:reset")],
+            [InlineKeyboardButton("🔙 Atrás", callback_data=f"admin_edit:{uid}")]
+        ])
+        await msg.edit_text("📊 *Selecciona límite mensual de operaciones:*", reply_markup=kb, parse_mode="Markdown")
+        return
+        
+    elif data.startswith("admin_edit_quota_set:"):
+        parts = data.split(":")
+        uid = parts[1]
+        val = parts[2]
+        if val == "reset":
+            user_manager.update_user_field(uid, "consumed_ops", 0)
+            await q.answer("Consumo reseteado a 0")
+        else:
+            limit = int(val)
+            user_manager.update_user_field(uid, "limit_ops", limit)
+            await q.answer(f"Límite establecido a {limit}")
+            
+        q.data = f"admin_edit:{uid}"
+        await handle_admin_callback(update, context)
+        return
+        
+    elif data == "admin_new_start":
+        context.user_data["admin_state"] = "awaiting_new_user_id"
+        context.user_data["admin_new_user"] = {}
+        await msg.edit_text(
+            "➕ *Registrar Nuevo Usuario*\n\n"
+            "Escribe el *ID de Telegram* del nuevo usuario (ej. `123456789`):",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancelar", callback_data="admin_main")]]),
+            parse_mode="Markdown"
+        )
+        return
+        
+    elif data.startswith("admin_new_role:"):
+        role = data.split(":")[1]
+        context.user_data["admin_new_user"]["role"] = role
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📅 30 días", callback_data="admin_new_dur:30")],
+            [InlineKeyboardButton("📅 90 días", callback_data="admin_new_dur:90")],
+            [InlineKeyboardButton("📅 365 días", callback_data="admin_new_dur:365")],
+            [InlineKeyboardButton("📅 Sin Límite (never)", callback_data="admin_new_dur:never")],
+            [InlineKeyboardButton("❌ Cancelar", callback_data="admin_main")]
+        ])
+        await msg.edit_text("📅 *Selecciona vigencia para el nuevo usuario:*", reply_markup=kb, parse_mode="Markdown")
+        return
+        
+    elif data.startswith("admin_new_dur:"):
+        days_str = data.split(":")[1]
+        if days_str == "never":
+            exp_date = "never"
+        else:
+            days = int(days_str)
+            exp_date = (date.today() + timedelta(days=days)).strftime("%Y-%m-%d")
+            
+        context.user_data["admin_new_user"]["expiration_date"] = exp_date
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📊 50 operaciones", callback_data="admin_new_quota:50")],
+            [InlineKeyboardButton("📊 100 operaciones", callback_data="admin_new_quota:100")],
+            [InlineKeyboardButton("📊 Ilimitado", callback_data="admin_new_quota:-1")],
+            [InlineKeyboardButton("❌ Cancelar", callback_data="admin_main")]
+        ])
+        await msg.edit_text("📊 *Selecciona cuota mensual para el nuevo usuario:*", reply_markup=kb, parse_mode="Markdown")
+        return
+        
+    elif data.startswith("admin_new_quota:"):
+        limit = int(data.split(":")[1])
+        new_u = context.user_data.get("admin_new_user")
+        if not new_u or "id" not in new_u:
+            await msg.edit_text("Error en el flujo de registro. Inténtalo de nuevo.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="admin_main")]]))
+            return
+            
+        user_manager.register_user(
+            user_id=new_u["id"],
+            name=new_u["name"],
+            role=new_u["role"],
+            expiration_date=new_u["expiration_date"],
+            limit_ops=limit
+        )
+        
+        context.user_data.pop("admin_state", None)
+        context.user_data.pop("admin_new_user", None)
+        
+        await msg.edit_text(
+            f"✅ *Usuario `{new_u['name']}` registrado con éxito!*\n\n"
+            f"• ID: `{new_u['id']}`\n"
+            f"• Rol: `{new_u['role']}`\n"
+            f"• Expiración: `{new_u['expiration_date']}`\n"
+            f"• Límite ops: `{limit if limit != -1 else 'Ilimitado'}`",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Ir al Panel Principal", callback_data="admin_main")]]),
+            parse_mode="Markdown"
+        )
+        return
+
+
+async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _allowed(update):
+        await _deny(update)
+        return
+    user = user_manager.get_user(update.effective_user.id)
+    if not user or user.get("role") != "admin":
+        await update.effective_message.reply_text("❌ No tienes privilegios de administrador.")
+        return
+    await _show_admin_panel(update, context)
+
+
+async def _generate_purchases_loaded_report(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    date_from: date,
+    date_to: date,
+    status_msg,
+) -> None:
+    msg = update.effective_message
+    if not msg:
+        return
+        
+    path = config.FACTURAS_RECIBIDAS_PATH
+    if not path.exists():
+        await status_msg.edit_text("⚠️ No hay facturas de compra registradas en el sistema.")
+        return
+        
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        ws = wb.active
+        headers = excel_store._headers_index(ws)
+        
+        rows: list[list[object]] = []
+        count = 0
+        total_subtotal = Decimal("0")
+        total_iva = Decimal("0")
+        total_monto = Decimal("0")
+        
+        for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 1):
+            if not row:
+                continue
+            f_cell = excel_store._cell(row, headers, "Fecha_emision", None)
+            f_doc = excel_store._parse_fecha_cell(f_cell)
+            if f_doc is None or f_doc < date_from or f_doc > date_to:
+                continue
+                
+            num_doc = str(excel_store._cell(row, headers, "Numero_documento", "-"))
+            prov = str(excel_store._cell(row, headers, "Proveedor", "-"))
+            rif = str(excel_store._cell(row, headers, "Proveedor_RIF", "-"))
+            
+            sub = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Subtotal", None)) or Decimal("0")
+            exento = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Monto_exento", None)) or Decimal("0")
+            base = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Base_imponible", None)) or Decimal("0")
+            iva = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Monto_iva", None)) or Decimal("0")
+            tot = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Total", None)) or Decimal("0")
+            
+            count += 1
+            total_subtotal += sub
+            total_iva += iva
+            total_monto += tot
+            
+            rows.append([
+                count,
+                f_doc.strftime("%d/%m/%Y"),
+                num_doc,
+                prov,
+                rif,
+                float(sub),
+                float(exento),
+                float(base),
+                float(iva),
+                float(tot)
+            ])
+            
+        wb.close()
+        
+        if count == 0:
+            await status_msg.edit_text(f"No se encontraron facturas cargadas entre el {date_from.strftime('%d/%m/%Y')} y el {date_to.strftime('%d/%m/%Y')}.")
+            return
+            
+        period_str = f"Del {date_from.strftime('%d/%m/%Y')} al {date_to.strftime('%d/%m/%Y')}"
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+            report_xls_path = Path(tmp.name)
+            
+        excel_store.generate_premium_report_excel(
+            report_xls_path,
+            title="Reporte de Facturas Recibidas Cargadas",
+            period_str=period_str,
+            headers=["#", "Fecha Emisión", "Nro Documento", "Proveedor", "RIF", "Subtotal", "Exento", "Base Imponible", "IVA", "Total"],
+            rows=rows,
+            numeric_cols=[5, 6, 7, 8, 9],
+            sum_cols=[5, 6, 7, 8, 9]
+        )
+        
+        renamed_xls = report_xls_path.with_name(f"COMPRAS-CARGADAS-{date_from.strftime('%d%m%Y')}-AL-{date_to.strftime('%d%m%Y')}.xlsx")
+        report_xls_path.rename(renamed_xls)
+        
+        summary_text = (
+            f"📥 *Reporte de Facturas Cargadas Generado*\n\n"
+            f"📅 *Período:* {period_str}\n"
+            f"📄 *Total documentos:* `{count}`\n"
+            f"💰 *Total Subtotal:* `{excel_store._format_monto_ves(total_subtotal)}` Bs\n"
+            f"💸 *Total IVA:* `{excel_store._format_monto_ves(total_iva)}` Bs\n"
+            f"🛍️ *Total Facturado:* `{excel_store._format_monto_ves(total_monto)}` Bs\n"
+        )
+        
+        await status_msg.delete()
+        await msg.reply_document(
+            document=str(renamed_xls),
+            filename=renamed_xls.name,
+            caption=summary_text,
+            parse_mode="Markdown"
+        )
+        renamed_xls.unlink(missing_ok=True)
+        
+    except Exception as e:
+        logger.exception("Error al generar reporte de compras cargadas")
+        await status_msg.edit_text(f"❌ Ocurrió un error al generar el reporte: {e!s}")
+
+
+async def _generate_pending_withholdings_report(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    status_msg,
+) -> None:
+    msg = update.effective_message
+    if not msg:
+        return
+        
+    path = config.FACTURAS_RECIBIDAS_PATH
+    if not path.exists():
+        await status_msg.edit_text("⚠️ No hay facturas de compra registradas en el sistema.")
+        return
+        
+    try:
+        def _norm_doc(v: str) -> str:
+            return re.sub(r"\s+", "", str(v or "")).strip().upper()
+            
+        emitted_docs = set()
+        base_dir = config.RETENCIONES_EMITIDAS_DIR
+        if base_dir.is_dir():
+            for filepath in base_dir.glob("RETEN-EMIT-*.xlsx"):
+                try:
+                    temp_wb = load_workbook(filepath, read_only=True, data_only=True)
+                    temp_ws = temp_wb.active
+                    temp_headers = excel_store._headers_index(temp_ws)
+                    for r in temp_ws.iter_rows(min_row=2, values_only=True):
+                        if not r:
+                            continue
+                        doc_cell = str(excel_store._cell(r, temp_headers, "Documentos", "") or "").strip()
+                        if doc_cell:
+                            for d in re.split(r'[|,\s]+', doc_cell):
+                                d_norm = _norm_doc(d)
+                                if d_norm:
+                                    emitted_docs.add(d_norm)
+                    temp_wb.close()
+                except Exception as e:
+                    logger.error(f"Error cargando comprobantes de {filepath}: {e}")
+                    
+        wb = load_workbook(path, read_only=True, data_only=True)
+        ws = wb.active
+        headers = excel_store._headers_index(ws)
+        
+        rows: list[list[object]] = []
+        count = 0
+        total_subtotal = Decimal("0")
+        total_iva = Decimal("0")
+        total_monto = Decimal("0")
+        
+        for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 1):
+            if not row:
+                continue
+            
+            tipo_doc = str(excel_store._cell(row, headers, "Tipo_documento", "Factura")).strip()
+            num_doc = str(excel_store._cell(row, headers, "Numero_documento", "") or "").strip()
+            num_doc_norm = _norm_doc(num_doc)
+            
+            if not num_doc_norm or num_doc_norm in emitted_docs:
+                continue
+                
+            f_cell = excel_store._cell(row, headers, "Fecha_emision", None)
+            f_doc = excel_store._parse_fecha_cell(f_cell)
+            fecha_str = f_doc.strftime("%d/%m/%Y") if f_doc else "-"
+            
+            prov = str(excel_store._cell(row, headers, "Proveedor", "-"))
+            rif = str(excel_store._cell(row, headers, "Proveedor_RIF", "-"))
+            
+            sub = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Subtotal", None)) or Decimal("0")
+            exento = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Monto_exento", None)) or Decimal("0")
+            base = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Base_imponible", None)) or Decimal("0")
+            iva = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Monto_iva", None)) or Decimal("0")
+            tot = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Total", None)) or Decimal("0")
+            
+            count += 1
+            total_subtotal += sub
+            total_iva += iva
+            total_monto += tot
+            
+            rows.append([
+                count,
+                fecha_str,
+                num_doc,
+                prov,
+                rif,
+                float(sub),
+                float(exento),
+                float(base),
+                float(iva),
+                float(tot)
+            ])
+            
+        wb.close()
+        
+        if count == 0:
+            await status_msg.edit_text("🎉 *¡Excelente! No hay facturas pendientes de retención.* todas las facturas cargadas ya tienen su comprobante emitido.")
+            return
+            
+        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+            report_xls_path = Path(tmp.name)
+            
+        excel_store.generate_premium_report_excel(
+            report_xls_path,
+            title="Facturas de Compra Pendientes de Retención de IVA",
+            period_str=f"Al día de hoy: {date.today().strftime('%d/%m/%Y')}",
+            headers=["#", "Fecha Emisión", "Nro Documento", "Proveedor", "RIF", "Subtotal", "Exento", "Base Imponible", "IVA", "Total"],
+            rows=rows,
+            numeric_cols=[5, 6, 7, 8, 9],
+            sum_cols=[5, 6, 7, 8, 9]
+        )
+        
+        renamed_xls = report_xls_path.with_name(f"FACTURAS-SIN-RETENCION-{date.today().strftime('%d%m%Y')}.xlsx")
+        report_xls_path.rename(renamed_xls)
+        
+        summary_text = (
+            f"⚠️ *Facturas sin Comprobante de Retención Emitido*\n\n"
+            f"📄 *Total pendientes:* `{count}`\n"
+            f"💰 *Total Subtotal:* `{excel_store._format_monto_ves(total_subtotal)}` Bs\n"
+            f"💸 *Total IVA Pendiente:* `{excel_store._format_monto_ves(total_iva)}` Bs\n"
+            f"🛍️ *Total Facturado Pendiente:* `{excel_store._format_monto_ves(total_monto)}` Bs\n\n"
+            f"Se adjunta el reporte detallado con los datos de las facturas."
+        )
+        
+        await status_msg.delete()
+        await msg.reply_document(
+            document=str(renamed_xls),
+            filename=renamed_xls.name,
+            caption=summary_text,
+            parse_mode="Markdown"
+        )
+        renamed_xls.unlink(missing_ok=True)
+        
+    except Exception as e:
+        logger.exception("Error al generar reporte de facturas sin retención")
+        await status_msg.edit_text(f"❌ Ocurrió un error al generar el reporte: {e!s}")
     """Manejador global de errores para capturar y registrar excepciones no controladas."""
     logger.error("Excepción capturada mientras se procesaba una actualización:", exc_info=context.error)
     
@@ -5366,10 +6301,12 @@ def build_application() -> Application:
     app = Application.builder().token(config.BOT_TOKEN).request(req).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("mi_id", mi_id_cmd))
+    app.add_handler(CommandHandler("admin", admin_cmd))
     app.add_handler(CommandHandler("tributos", tributos_cmd))
     app.add_handler(CommandHandler("cotizacion", cotizacion_cmd))
     app.add_handler(CommandHandler("nota", nota_cmd))
     app.add_handler(CommandHandler("descargar_excel", descargar_excel_cmd))
+    app.add_handler(CallbackQueryHandler(handle_admin_callback, pattern=r"^admin_"))
     app.add_handler(CallbackQueryHandler(handle_emit_retention_callback, pattern=r"^emit_"))
     app.add_handler(CallbackQueryHandler(handle_tributos_callback, pattern=r"^tributos_"))
     app.add_handler(CallbackQueryHandler(handle_cotizaciones_edit_callback, pattern=r"^coti_edit_"))
