@@ -121,6 +121,12 @@ REPORTES_Z_PATH = _resolve_path_env(
     "REPORTES-Z-NUEVO.xlsx",
 )
 
+# Excel de inventario/productos para cotizaciones y notas de entrega.
+PRODUCTOS_PATH = _resolve_path_env(
+    "PRODUCTOS_XLSX",
+    "inventario.xlsx",
+)
+
 # Carpeta base para libros mensuales de retenciones emitidas.
 RETENCIONES_EMITIDAS_DIR = _resolve_path_env(
     "RETENCIONES_EMITIDAS_DIR",
@@ -155,3 +161,7 @@ RETENCIONES_ISLR_DIR = _resolve_path_env(
     "RETENCIONES_ISLR_DIR",
     "RETENCIONES-ISLR-EMITIDAS",
 )
+
+# Evitar ejecución local accidental (polling) que rompa el webhook de producción
+FORCE_LOCAL_POLLING: bool = os.environ.get("FORCE_LOCAL_POLLING", "false").lower() == "true"
+

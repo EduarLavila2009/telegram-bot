@@ -1015,7 +1015,8 @@ SYNC_FILES = {
     "reten_rec": "RETEN-REC.xlsx",
     "facturas_recibidas": "FACTURAS-RECIBIDAS-NUEVO.xlsx",
     "facturas_emitidas": "FACTURAS-EMITIDAS.xlsx",
-    "reportes_z": "REPORTES-Z-NUEVO.xlsx"
+    "reportes_z": "REPORTES-Z-NUEVO.xlsx",
+    "productos": config.PRODUCTOS_PATH.name
 }
 
 def get_sync_file_path(key: str) -> Path | None:
@@ -1027,6 +1028,8 @@ def get_sync_file_path(key: str) -> Path | None:
         return config.FACTURAS_EMITIDAS_PATH
     elif key == "reportes_z":
         return config.REPORTES_Z_PATH
+    elif key == "productos":
+        return config.PRODUCTOS_PATH
     return None
 
 _last_mtime_cache = {}
@@ -1154,15 +1157,23 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     msg = update.effective_message
     if not msg or not msg.document:
         return
-    if not _allowed(update):
+    filename = msg.document.file_name
+    logger.info(f"Recibido documento: {filename} (chat_id={msg.chat_id})")
+    if not _allowed(update) and not _is_sufevica_chat(update):
+        logger.warning(f"Documento rechazado por falta de permisos (chat_id={msg.chat_id})")
         await _deny(update)
         return
-    filename = msg.document.file_name
     matched_key = None
     for key, name in SYNC_FILES.items():
         if filename.lower() == name.lower():
             matched_key = key
             break
+            
+    if not matched_key and filename.lower().endswith(".xlsx"):
+        fn_lower = filename.lower()
+        if fn_lower.startswith("productos") or fn_lower.startswith("inventario"):
+            matched_key = "productos"
+            
     if matched_key:
         path = get_sync_file_path(matched_key)
         status_msg = await msg.reply_text(f"📥 *Recibido {filename}. Procesando y reemplazando archivo local...*", parse_mode="Markdown")
@@ -2596,6 +2607,168 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not msg.photo:
         return
 
+    pending_doc = context.user_data.get("pending_doc")
+    if pending_doc and pending_doc.get("awaiting") == "search_barcode":
+        photo = msg.photo[-1]
+        status_msg = await msg.reply_text("📥 *Escaneando código de barras con IA (Gemini)...*", parse_mode="Markdown")
+        
+        suffix = ".jpg"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            
+        try:
+            tg_file = await context.bot.get_file(photo.file_id)
+            await tg_file.download_to_drive(tmp_path)
+            
+            from PIL import Image
+            from . import ocr_extract
+            import os
+            
+            img = Image.open(tmp_path)
+            barcode_val = ocr_extract.extract_barcode_from_image(img)
+            
+            if barcode_val != "NONE":
+                # Buscar en el Excel
+                products = excel_store.search_products_in_excel(config.PRODUCTOS_PATH, barcode_val, search_by="code")
+                if products:
+                    if len(products) == 1:
+                        product = products[0]
+                        pending_doc["selected_product"] = product
+                        pending_doc["awaiting"] = "input_qty"
+                        
+                        try:
+                            await msg.delete()
+                        except Exception:
+                            pass
+                        try:
+                            await status_msg.delete()
+                        except Exception:
+                            pass
+                            
+                        prompt_id = pending_doc.pop("prompt_message_id", None)
+                        if prompt_id:
+                            try:
+                                await context.bot.delete_message(chat_id=msg.chat_id, message_id=prompt_id)
+                            except Exception:
+                                pass
+                                
+                        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")]])
+                        prompt = await msg.reply_text(
+                            f"✅ *Código Escaneado:* `{barcode_val}`\n\n"
+                            f"Producto: *{product['description']}* (`{product['code']}`)\n"
+                            f"Precio Unitario: *${product['price']:.2f}*\n\n"
+                            f"Por favor, escribe la *cantidad* a cotizar / usar para este producto:",
+                            reply_markup=kb,
+                            parse_mode="Markdown"
+                        )
+                        pending_doc["prompt_message_id"] = prompt.message_id
+                    else:
+                        pending_doc["awaiting"] = "select_product"
+                        try:
+                            await msg.delete()
+                        except Exception:
+                            pass
+                        try:
+                            await status_msg.delete()
+                        except Exception:
+                            pass
+                            
+                        prompt_id = pending_doc.pop("prompt_message_id", None)
+                        if prompt_id:
+                            try:
+                                await context.bot.delete_message(chat_id=msg.chat_id, message_id=prompt_id)
+                            except Exception:
+                                pass
+                                
+                        pending_doc["temp_search_results"] = products[:8]
+                        kb_list = []
+                        for idx, p in enumerate(products[:8]):
+                            btn_text = f"[{p['code']}] {p['description'][:25]} (${p['price']:.2f})"
+                            kb_list.append([InlineKeyboardButton(btn_text, callback_data=f"coti_build_select_p:{idx}")])
+                        kb_list.append([
+                            InlineKeyboardButton("📷 Escanear de Nuevo", callback_data="coti_build_search_barcode"),
+                            InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")
+                        ])
+                        kb = InlineKeyboardMarkup(kb_list)
+                        prompt = await msg.reply_text(
+                            f"✅ *Código Escaneado:* `{barcode_val}`\n\n"
+                            f"🔍 Se encontraron múltiples coincidencias ({len(products)}). Selecciona el producto exacto de abajo:",
+                            reply_markup=kb,
+                            parse_mode="Markdown"
+                        )
+                        pending_doc["prompt_message_id"] = prompt.message_id
+                else:
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
+                    try:
+                        await status_msg.delete()
+                    except Exception:
+                        pass
+                        
+                    prompt_id = pending_doc.pop("prompt_message_id", None)
+                    if prompt_id:
+                        try:
+                            await context.bot.delete_message(chat_id=msg.chat_id, message_id=prompt_id)
+                        except Exception:
+                            pass
+                            
+                    kb = InlineKeyboardMarkup([
+                        [
+                            InlineKeyboardButton("📷 Escanear de Nuevo", callback_data="coti_build_search_barcode"),
+                            InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")
+                        ]
+                    ])
+                    prompt = await msg.reply_text(
+                        f"✅ *Código Escaneado:* `{barcode_val}`\n\n"
+                        f"❌ El producto con este código de barras no se encuentra registrado en el inventario Excel.\n\n"
+                        f"¿Deseas intentar con otra imagen?",
+                        reply_markup=kb,
+                        parse_mode="Markdown"
+                    )
+                    pending_doc["prompt_message_id"] = prompt.message_id
+            else:
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
+                    
+                prompt_id = pending_doc.pop("prompt_message_id", None)
+                if prompt_id:
+                    try:
+                        await context.bot.delete_message(chat_id=msg.chat_id, message_id=prompt_id)
+                    except Exception:
+                        pass
+                        
+                kb = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("📷 Escanear de Nuevo", callback_data="coti_build_search_barcode"),
+                        InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")
+                    ]
+                ])
+                prompt = await msg.reply_text(
+                    "❌ No se pudo identificar ningún código de barras en la imagen provista.\n\n"
+                    "Por favor asegúrate de que la foto esté nítida y bien iluminada. ¿Deseas intentar de nuevo?",
+                    reply_markup=kb,
+                    parse_mode="Markdown"
+                )
+                pending_doc["prompt_message_id"] = prompt.message_id
+        except Exception as e:
+            logger.error(f"Error procesando imagen para codigo de barras: {e}")
+            await msg.reply_text(f"⚠️ Ocurrió un error al procesar el código de barras por imagen: {e}")
+        finally:
+            try:
+                if tmp_path.exists():
+                    os.unlink(tmp_path)
+            except Exception:
+                pass
+        return
+
     photo = msg.photo[-1]
     status_msg = await msg.reply_text("📥 *Procesando imagen con IA (Gemini)...*", parse_mode="Markdown")
     
@@ -3188,6 +3361,172 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     pending_doc = context.user_data.get("pending_doc")
     if pending_doc:
         state = pending_doc.get("awaiting")
+        
+        if state == "search_code":
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+            
+            prompt_id = pending_doc.pop("prompt_message_id", None)
+            if prompt_id:
+                try:
+                    await context.bot.delete_message(chat_id=msg.chat_id, message_id=prompt_id)
+                except Exception:
+                    pass
+                    
+            products = excel_store.search_products_in_excel(config.PRODUCTOS_PATH, text, search_by="code")
+            
+            if products:
+                if len(products) == 1:
+                    product = products[0]
+                    pending_doc["selected_product"] = product
+                    pending_doc["awaiting"] = "input_qty"
+                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")]])
+                    prompt = await msg.reply_text(
+                        f"🔢 *CANTIDAD DE PRODUCTO*\n\n"
+                        f"Has seleccionado: *{product['description']}* (`{product['code']}`)\n"
+                        f"Precio Unitario: *${product['price']:.2f}*\n\n"
+                        f"Por favor, escribe la *cantidad* a cotizar / usar para este producto:",
+                        reply_markup=kb,
+                        parse_mode="Markdown"
+                    )
+                    pending_doc["prompt_message_id"] = prompt.message_id
+                else:
+                    pending_doc["awaiting"] = "select_product"
+                    pending_doc["temp_search_results"] = products[:8]
+                    kb_list = []
+                    for idx, p in enumerate(products[:8]):
+                        btn_text = f"[{p['code']}] {p['description'][:25]} (${p['price']:.2f})"
+                        kb_list.append([InlineKeyboardButton(btn_text, callback_data=f"coti_build_select_p:{idx}")])
+                    kb_list.append([
+                        InlineKeyboardButton("🔍 Buscar de Nuevo", callback_data="coti_build_search_code"),
+                        InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")
+                    ])
+                    kb = InlineKeyboardMarkup(kb_list)
+                    prompt = await msg.reply_text(
+                        f"🔍 *Múltiples coincidencias encontradas ({len(products)}):*\n"
+                        f"Por favor, selecciona el producto exacto de la lista de abajo:",
+                        reply_markup=kb,
+                        parse_mode="Markdown"
+                    )
+                    pending_doc["prompt_message_id"] = prompt.message_id
+            else:
+                kb = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("🔍 Buscar de Nuevo", callback_data="coti_build_search_code"),
+                        InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")
+                    ]
+                ])
+                prompt = await msg.reply_text(
+                    f"❌ No se encontró ningún producto con el código `{text}`.\n\n"
+                    f"¿Deseas intentar de nuevo?",
+                    reply_markup=kb,
+                    parse_mode="Markdown"
+                )
+                pending_doc["prompt_message_id"] = prompt.message_id
+            return
+
+        elif state == "search_desc":
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+            
+            prompt_id = pending_doc.pop("prompt_message_id", None)
+            if prompt_id:
+                try:
+                    await context.bot.delete_message(chat_id=msg.chat_id, message_id=prompt_id)
+                except Exception:
+                    pass
+                    
+            products = excel_store.search_products_in_excel(config.PRODUCTOS_PATH, text, search_by="desc")
+            
+            if products:
+                pending_doc["awaiting"] = "select_product"
+                pending_doc["temp_search_results"] = products[:8]
+                kb_list = []
+                for idx, p in enumerate(products[:8]):
+                    btn_text = f"[{p['code']}] {p['description'][:25]} (${p['price']:.2f})"
+                    kb_list.append([InlineKeyboardButton(btn_text, callback_data=f"coti_build_select_p:{idx}")])
+                    
+                extra_text = ""
+                if len(products) > 8:
+                    extra_text = f"⚠️ Se encontraron {len(products)} resultados. Se muestran los primeros 8. Sé más específico en tu búsqueda si es necesario.\n\n"
+                
+                kb_list.append([
+                    InlineKeyboardButton("🔎 Buscar de Nuevo", callback_data="coti_build_search_desc"),
+                    InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")
+                ])
+                kb = InlineKeyboardMarkup(kb_list)
+                prompt = await msg.reply_text(
+                    f"🔎 *Productos que coinciden con su búsqueda:*\n\n"
+                    f"{extra_text}"
+                    f"Por favor, selecciona el producto exacto de la lista de abajo:",
+                    reply_markup=kb,
+                    parse_mode="Markdown"
+                )
+                pending_doc["prompt_message_id"] = prompt.message_id
+            else:
+                kb = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("🔎 Buscar de Nuevo", callback_data="coti_build_search_desc"),
+                        InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")
+                    ]
+                ])
+                prompt = await msg.reply_text(
+                    f"❌ No se encontró ningún producto que contenga `{text}` en su descripción.\n\n"
+                    f"¿Deseas intentar de nuevo?",
+                    reply_markup=kb,
+                    parse_mode="Markdown"
+                )
+                pending_doc["prompt_message_id"] = prompt.message_id
+            return
+            
+        elif state == "input_qty":
+            try:
+                qty_val = float(text.replace(",", "."))
+                if qty_val <= 0:
+                    raise ValueError()
+            except ValueError:
+                await msg.reply_text("⚠️ Por favor ingresa una cantidad válida mayor a cero (ej. 10 o 5.5).")
+                return
+                
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+                
+            prompt_id = pending_doc.pop("prompt_message_id", None)
+            if prompt_id:
+                try:
+                    await context.bot.delete_message(chat_id=msg.chat_id, message_id=prompt_id)
+                except Exception:
+                    pass
+            
+            product = pending_doc.pop("selected_product", None)
+            doc_data = pending_doc["parsed_data"]
+            if product:
+                found = False
+                for it in doc_data["items"]:
+                    if it.get("code") == product["code"]:
+                        it["qty"] = float(it["qty"]) + qty_val
+                        it["totalUsd"] = it["qty"] * float(it["priceUsd"])
+                        found = True
+                        break
+                if not found:
+                    doc_data["items"].append({
+                        "code": product["code"],
+                        "desc": product["description"],
+                        "qty": qty_val,
+                        "priceUsd": product["price"],
+                        "totalUsd": qty_val * product["price"]
+                    })
+            
+            pending_doc["awaiting"] = "builder_main"
+            await _send_interactive_builder_card(update, context, first_time=False)
+            return
+
         if state == "text_data":
             doc_type = pending_doc["type"]
             doc_data = _parse_document_text_explicit(text, doc_type)
@@ -4211,11 +4550,17 @@ async def _start_document_flow(
         "awaiting": "text_data"
     }
     
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛠️ Constructor Interactivo", callback_data="coti_build_start")],
+        [InlineKeyboardButton("❌ Cancelar", callback_data="coti_build_cancel")]
+    ])
+    
     prompt = await msg.reply_text(
         f"{emoji} *NUEVA {title_up}* {emoji}\n\n"
         f"Por favor, *pega o escribe aquí el texto con los datos* del cliente y los productos "
         f"(puedes copiarlo directamente desde Excel, WhatsApp o cualquier factura).\n\n"
-        f"Yo me encargaré de organizarlos y calcularlos automáticamente.",
+        f"O presiona el botón de abajo para iniciar el *Constructor Interactivo* y seleccionar productos desde el Excel.",
+        reply_markup=kb,
         parse_mode="Markdown"
     )
     context.user_data["pending_doc"]["start_prompt_message_id"] = prompt.message_id
@@ -4323,12 +4668,13 @@ async def _send_client_data_card(update: Update, context: ContextTypes.DEFAULT_T
         f"¿Deseas modificar o añadir alguno de estos datos antes de continuar?\n"
         f"_(Cualquiera de estos datos puede ser omitido para dejarlo en blanco)_"
     )
+    done_lbl = "⏩ VOLVER AL CONSTRUCTOR" if pending_doc.get("builder_mode") else "⏩ CONTINUAR A LA MONEDA"
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("👤 Cliente", callback_data="coti_edit_name"), InlineKeyboardButton("🆔 RIF/CI", callback_data="coti_edit_rif")],
         [InlineKeyboardButton("📍 Dirección", callback_data="coti_edit_address"), InlineKeyboardButton("📞 Teléfono", callback_data="coti_edit_phone")],
         [InlineKeyboardButton("👔 Vendedor", callback_data="coti_edit_salesman"), InlineKeyboardButton("💳 Condición: " + client.get("saleType", "Contado"), callback_data="coti_edit_saletype")],
         [InlineKeyboardButton("📝 Nota", callback_data="coti_edit_note"), InlineKeyboardButton("💵 Tasa BCV", callback_data="coti_edit_rate")],
-        [InlineKeyboardButton("⏩ CONTINUAR A LA MONEDA", callback_data="coti_edit_done")]
+        [InlineKeyboardButton(done_lbl, callback_data="coti_edit_done")]
     ])
     menu_message_id = pending_doc.get("menu_message_id") if pending_doc else None
     chat_id = update.effective_chat.id if update.effective_chat else None
@@ -4408,15 +4754,416 @@ async def handle_cotizaciones_edit_callback(update: Update, context: ContextType
         client["saleType"] = "Crédito" if current == "Contado" else "Contado"
         await _send_client_data_card(update, context)
     elif data == "coti_edit_done":
-        pending_doc["awaiting"] = "currency"
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Dólares Americanos ($)", callback_data="coti_curr_usd"), InlineKeyboardButton("Bolívares (Bs.)", callback_data="coti_curr_ves")]
-        ])
+        if pending_doc.get("builder_mode"):
+            pending_doc["awaiting"] = "builder_main"
+            try:
+                await q.delete_message()
+            except Exception:
+                pass
+            await _send_interactive_builder_card(update, context, first_time=True)
+        else:
+            pending_doc["awaiting"] = "currency"
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("Dólares Americanos ($)", callback_data="coti_curr_usd"), InlineKeyboardButton("Bolívares (Bs.)", callback_data="coti_curr_ves")]
+            ])
+            try:
+                await q.delete_message()
+            except Exception:
+                pass
+            await msg.reply_text("💵 ¿En qué moneda deseas que se exprese el documento por defecto al abrirse?", reply_markup=kb, parse_mode="Markdown")
+
+
+async def _send_interactive_builder_card(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    first_time: bool = False,
+) -> None:
+    msg = update.effective_message
+    if not msg:
+        return
+    pending_doc = context.user_data.get("pending_doc")
+    if not pending_doc or "parsed_data" not in pending_doc:
+        return
+        
+    doc_data = pending_doc["parsed_data"]
+    client = doc_data["client"]
+    items = doc_data["items"]
+    doc_type = doc_data["docType"]
+    currency = doc_data.get("currency", "usd")
+    rate = doc_data.get("exchangeRate", get_current_bcv_rate())
+    
+    title_up = "COTIZACIÓN" if doc_type == "cotizacion" else "NOTA DE ENTREGA"
+    emoji = "📋" if doc_type == "cotizacion" else "📦"
+    
+    # Calcular totales
+    total_usd = sum(float(it.get("qty", 1.0)) * float(it.get("priceUsd", 0.0)) for it in items)
+    conv_rate = float(rate) if currency == "ves" else 1.0
+    total_conv = total_usd * conv_rate
+    symbol = "$" if currency == "usd" else "Bs."
+    formatted_total = f"{total_conv:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    
+    # Construir listado de ítems
+    items_text = ""
+    for idx, it in enumerate(items, 1):
+        qty = float(it.get("qty", 1.0))
+        price = float(it.get("priceUsd", 0.0)) * conv_rate
+        subt = qty * price
+        formatted_subt = f"{subt:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        formatted_price = f"{price:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        
+        desc = it.get("desc", "")
+        if len(desc) > 30:
+            desc = desc[:27] + "..."
+            
+        items_text += f"*{idx}.* `{it.get('code')}` - {desc}\n    _{qty} x {symbol} {formatted_price} = {symbol} {formatted_subt}_\n"
+        
+    if not items_text:
+        items_text = "_[No hay productos agregados todavía]_\n"
+        
+    client_name = client.get("name") or "_[No especificado]_"
+    client_rif = client.get("rif") or "_[No especificado]_"
+    
+    text = (
+        f"🛠️ *CONSTRUCTOR INTERACTIVO DE {title_up}* {emoji}\n\n"
+        f"👤 *Cliente:* {client_name}\n"
+        f"🆔 *RIF/CI:* {client_rif}\n"
+        f"💵 *Moneda:* {currency.upper()} | *Tasa BCV:* Bs. {rate:,.2f}\n\n"
+        f"🛒 *PRODUCTOS:* \n{items_text}\n"
+        f"💰 *TOTAL APROXIMADO:* *{symbol} {formatted_total}*\n\n"
+        f"Usa los botones de abajo para buscar y agregar productos desde el Excel, configurar los datos del cliente, o generar el PDF final."
+    )
+    
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔍 Buscar por Código", callback_data="coti_build_search_code"),
+            InlineKeyboardButton("🔎 Buscar por Descripción", callback_data="coti_build_search_desc")
+        ],
+        [
+            InlineKeyboardButton("📷 Escanear Código Barra", callback_data="coti_build_search_barcode")
+        ],
+        [
+            InlineKeyboardButton("👤 Configurar Cliente", callback_data="coti_build_edit_client"),
+            InlineKeyboardButton("💵 Cambiar Moneda", callback_data="coti_build_toggle_curr")
+        ],
+        [
+            InlineKeyboardButton("🛒 Ver / Editar Ítems", callback_data="coti_build_view_items")
+        ],
+        [
+            InlineKeyboardButton("✅ GENERAR DOCUMENTO", callback_data="coti_build_generate"),
+            InlineKeyboardButton("❌ CANCELAR", callback_data="coti_build_cancel")
+        ]
+    ])
+    
+    menu_message_id = pending_doc.get("menu_message_id")
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    
+    if first_time or not menu_message_id or not chat_id:
+        # Borrar el prompt anterior de entrada de texto si existe
+        start_prompt_id = pending_doc.pop("start_prompt_message_id", None)
+        if start_prompt_id and chat_id:
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=start_prompt_id)
+            except Exception:
+                pass
+        
+        sent_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        pending_doc["menu_message_id"] = sent_msg.message_id
+    else:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=menu_message_id,
+                text=text,
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+        except Exception:
+            sent_msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+            pending_doc["menu_message_id"] = sent_msg.message_id
+
+
+async def _send_builder_items_editor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if not msg:
+        return
+    pending_doc = context.user_data.get("pending_doc")
+    if not pending_doc or "parsed_data" not in pending_doc:
+        return
+    q = update.callback_query
+    
+    doc_data = pending_doc["parsed_data"]
+    items = doc_data["items"]
+    currency = doc_data.get("currency", "usd")
+    rate = doc_data.get("exchangeRate", get_current_bcv_rate())
+    symbol = "$" if currency == "usd" else "Bs."
+    conv_rate = float(rate) if currency == "ves" else 1.0
+    
+    text = "🛒 *PRODUCTOS AGREGADOS*\n\nSelecciona el botón de un producto para eliminarlo del documento:\n\n"
+    
+    kb_list = []
+    for idx, it in enumerate(items):
+        qty = float(it.get("qty", 1.0))
+        price = float(it.get("priceUsd", 0.0)) * conv_rate
+        subt = qty * price
+        formatted_subt = f"{subt:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        
+        btn_text = f"❌ {it.get('code')} (Cant: {qty}) = {symbol} {formatted_subt}"
+        kb_list.append([InlineKeyboardButton(btn_text, callback_data=f"coti_build_delete_item:{idx}")])
+        
+        desc_short = it.get('desc', '')
+        if len(desc_short) > 25:
+            desc_short = desc_short[:22] + "..."
+        text += f"• *{it.get('code')}* - {desc_short} (Cant: {qty}) = {symbol} {formatted_subt}\n"
+        
+    if not items:
+        text += "_[No hay productos agregados todavía]_\n"
+        
+    kb_list.append([
+        InlineKeyboardButton("🧹 Vaciar Todo", callback_data="coti_build_clear_items"),
+        InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")
+    ])
+    kb = InlineKeyboardMarkup(kb_list)
+    
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    menu_message_id = pending_doc.get("menu_message_id")
+    
+    if q and menu_message_id and chat_id:
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=menu_message_id,
+                text=text,
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+        except Exception:
+            sent_msg = await context.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+            pending_doc["menu_message_id"] = sent_msg.message_id
+    else:
+        sent_msg = await msg.reply_text(
+            text,
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        pending_doc["menu_message_id"] = sent_msg.message_id
+
+
+async def handle_builder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    if not q:
+        return
+    await q.answer()
+    data = (q.data or "").strip()
+    msg = q.message
+    if not msg:
+        return
+        
+    pending_doc = context.user_data.get("pending_doc")
+    
+    # Para coti_build_start, inicializar estructura de constructor interactivo
+    if data == "coti_build_start":
+        doc_type = "cotizacion"
+        if pending_doc:
+            doc_type = pending_doc.get("type", "cotizacion")
+        
+        pending_doc = {
+            "type": doc_type,
+            "builder_mode": True,
+            "awaiting": "builder_main",
+            "parsed_data": {
+                "docType": doc_type,
+                "docNumber": "",
+                "client": {
+                    "name": "",
+                    "rif": "",
+                    "address": "",
+                    "phone": "",
+                    "salesman": "",
+                    "saleType": "Contado",
+                    "note": "",
+                },
+                "items": [],
+                "currency": "usd",
+                "exchangeRate": get_current_bcv_rate(),
+            }
+        }
+        context.user_data["pending_doc"] = pending_doc
+        
         try:
             await q.delete_message()
         except Exception:
             pass
-        await msg.reply_text("💵 ¿En qué moneda deseas que se exprese el documento por defecto al abrirse?", reply_markup=kb, parse_mode="Markdown")
+            
+        await _send_interactive_builder_card(update, context, first_time=True)
+        return
+        
+    if not pending_doc or "parsed_data" not in pending_doc:
+        await msg.reply_text("❌ No hay ningún documento en construcción activa. Envía /cotizacion o /nota para iniciar.")
+        return
+        
+    doc_data = pending_doc["parsed_data"]
+    
+    if data == "coti_build_main":
+        pending_doc["awaiting"] = "builder_main"
+        prompt_id = pending_doc.pop("prompt_message_id", None)
+        if prompt_id:
+            try:
+                await context.bot.delete_message(chat_id=msg.chat_id, message_id=prompt_id)
+            except Exception:
+                pass
+        await _send_interactive_builder_card(update, context, first_time=False)
+        
+    elif data == "coti_build_search_code":
+        pending_doc["awaiting"] = "search_code"
+        try:
+            await q.delete_message()
+        except Exception:
+            pass
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")]])
+        prompt = await msg.reply_text(
+            "🔍 *BUSCAR POR CÓDIGO*\n\nPor favor, escribe el *código de producto* a buscar (ej. `TUB-001` o `PER`):",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        pending_doc["prompt_message_id"] = prompt.message_id
+        
+    elif data == "coti_build_search_barcode":
+        pending_doc["awaiting"] = "search_barcode"
+        try:
+            await q.delete_message()
+        except Exception:
+            pass
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")]])
+        prompt = await msg.reply_text(
+            "📷 *ESCANEAR CÓDIGO DE BARRAS*\n\nPor favor, *toma una foto* al código de barras o código QR de tu producto (desde tu móvil o PC) y *envíamela* por aquí. Yo la decodificaré para buscar el producto:",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        pending_doc["prompt_message_id"] = prompt.message_id
+        
+    elif data == "coti_build_search_desc":
+        pending_doc["awaiting"] = "search_desc"
+        try:
+            await q.delete_message()
+        except Exception:
+            pass
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")]])
+        prompt = await msg.reply_text(
+            "🔎 *BUSCAR POR DESCRIPCIÓN*\n\nPor favor, escribe la *descripción o palabra clave* del producto a buscar (ej. `tubo` o `codo`):",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        pending_doc["prompt_message_id"] = prompt.message_id
+        
+    elif data == "coti_build_toggle_curr":
+        curr = doc_data.get("currency", "usd")
+        doc_data["currency"] = "ves" if curr == "usd" else "usd"
+        await _send_interactive_builder_card(update, context, first_time=False)
+        
+    elif data == "coti_build_edit_client":
+        pending_doc["awaiting"] = "edit_card"
+        try:
+            await q.delete_message()
+        except Exception:
+            pass
+        await _send_client_data_card(update, context, first_time=True)
+        
+    elif data == "coti_build_view_items":
+        await _send_builder_items_editor(update, context)
+        
+    elif data == "coti_build_clear_items":
+        doc_data["items"] = []
+        await _send_builder_items_editor(update, context)
+        
+    elif data.startswith("coti_build_delete_item:"):
+        idx = int(data.split(":")[1])
+        if 0 <= idx < len(doc_data["items"]):
+            doc_data["items"].pop(idx)
+        await _send_builder_items_editor(update, context)
+        
+    elif data.startswith("coti_build_select_p:"):
+        p_val = data.split(":", 1)[1]
+        product = None
+        if p_val.isdigit() and "temp_search_results" in pending_doc:
+            idx = int(p_val)
+            if 0 <= idx < len(pending_doc["temp_search_results"]):
+                product = pending_doc["temp_search_results"][idx]
+                
+        if not product:
+            # Fallback en caso de que no esté en la caché temporal (ej. reinicio)
+            products = excel_store.search_products_in_excel(config.PRODUCTOS_PATH, p_val, search_by="code")
+            if products:
+                product = products[0]
+                for p in products:
+                    if p["code"].lower() == p_val.lower():
+                        product = p
+                        break
+                        
+        if product:
+            pending_doc["selected_product"] = product
+            pending_doc["awaiting"] = "input_qty"
+            
+            try:
+                await q.delete_message()
+            except Exception:
+                pass
+                
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")]])
+            prompt = await msg.reply_text(
+                f"🔢 *CANTIDAD DE PRODUCTO*\n\n"
+                f"Has seleccionado: *{product['description']}* (`{product['code']}`)\n"
+                f"Precio Unitario: *${product['price']:.2f}*\n\n"
+                f"Por favor, escribe la *cantidad* a cotizar / usar para este producto:",
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+            pending_doc["prompt_message_id"] = prompt.message_id
+        else:
+            await msg.reply_text("❌ Error: No se encontró la información del producto. Inténtalo nuevamente.")
+            
+    elif data == "coti_build_generate":
+        if not doc_data.get("items"):
+            await msg.reply_text("⚠️ No se puede generar un documento sin productos. Agrega al menos uno primero.")
+            return
+            
+        doc_type = doc_data["docType"]
+        correlativo = _get_and_increment_correlativo(doc_type)
+        doc_data["docNumber"] = correlativo
+        
+        try:
+            await q.delete_message()
+        except Exception:
+            pass
+            
+        await _generate_document_from_parsed_data(update, context, doc_data)
+        context.user_data.pop("pending_doc", None)
+        
+    elif data == "coti_build_cancel":
+        doc_type = pending_doc.get("type", "documento")
+        title_up = "COTIZACIÓN" if doc_type == "cotizacion" else "NOTA DE ENTREGA"
+        
+        try:
+            await q.delete_message()
+        except Exception:
+            pass
+            
+        context.user_data.pop("pending_doc", None)
+        await msg.reply_text(f"❌ Flujo de creación de *{title_up}* cancelado.", parse_mode="Markdown")
 
 
 async def handle_cotizaciones_callback(
@@ -4615,6 +5362,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(handle_tributos_callback, pattern=r"^tributos_"))
     app.add_handler(CallbackQueryHandler(handle_cotizaciones_edit_callback, pattern=r"^coti_edit_"))
     app.add_handler(CallbackQueryHandler(handle_cotizaciones_callback, pattern=r"^coti_curr_"))
+    app.add_handler(CallbackQueryHandler(handle_builder_callback, pattern=r"^coti_build_"))
     app.add_handler(CallbackQueryHandler(handle_share_email_callback, pattern=r"^share_email$"))
     app.add_handler(CallbackQueryHandler(handle_share_cancel_callback, pattern=r"^share_cancel$"))
     app.add_handler(CallbackQueryHandler(handle_ocr_callback, pattern=r"^ocr_"))
@@ -4652,6 +5400,18 @@ def main() -> None:
                     close_loop=False
                 )
             else:
+                if not config.FORCE_LOCAL_POLLING:
+                    logger.critical(
+                        "🛑 EJECUCIÓN LOCAL ABORTADA PARA EVITAR CONFLICTOS CON LA NUBE:\n"
+                        "Se detectó un intento de iniciar el bot localmente en modo polling.\n"
+                        "Hacer esto eliminaría la configuración del Webhook en Render y dejaría al bot "
+                        "de producción inactivo.\n"
+                        "Si realmente deseas probar este bot localmente y suspender temporalmente el de producción, "
+                        "agrega 'FORCE_LOCAL_POLLING=true' en tu archivo .env local antes de iniciar."
+                    )
+                    import sys
+                    sys.exit(1)
+
                 logger.info("Bot en marcha (polling). Usuario permitido: %s", config.ALLOWED_USER_ID)
                 # Ejecutar el bot. Este método bloquea hasta que recibe señal de parada (Ctrl+C, SIGINT, SIGTERM)
                 app.run_polling(allowed_updates=Update.ALL_TYPES, close_loop=False)
