@@ -6298,6 +6298,9 @@ async def _generate_pending_withholdings_report(
     except Exception as e:
         logger.exception("Error al generar reporte de facturas sin retención")
         await status_msg.edit_text(f"❌ Ocurrió un error al generar el reporte: {e!s}")
+
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Manejador global de errores para capturar y registrar excepciones no controladas."""
     logger.error("Excepción capturada mientras se procesaba una actualización:", exc_info=context.error)
     
