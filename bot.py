@@ -2631,6 +2631,11 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _deny(update)
         return
     context.user_data["voice_mode"] = False
+    context.user_data.pop("pending_doc", None)
+    context.user_data.pop("awaiting_emit_docs", None)
+    context.user_data.pop("admin_state", None)
+    context.user_data.pop("admin_new_user", None)
+    context.user_data.pop("share_doc", None)
     if update.message:
         await update.message.reply_text(
             "🏛️ *Bot Financiero* 🏛️\n\n"
@@ -3470,6 +3475,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     context.user_data.setdefault("voice_mode", False)
     
+    # Limpiar flujos/estados si es navegación de menús
+    if text in {
+        COTI_BUTTON, NOTA_BUTTON, TRIBUTOS_BUTTON, ADMIN_PANEL_BUTTON, 
+        SUBMENU_VOLVER, REPORT_VOLVER_TRIBUTOS, VOICE_BUTTON, VOICE_CANCEL_BUTTON,
+        SUBMENU_CARGAR_FACTURA, SUBMENU_RETENCION_RECIBIDA, SUBMENU_REPORTE_Z,
+        SUBMENU_FACTURA_EMITIDA, SUBMENU_GENERAR_RETENCION, SUBMENU_GENERAR_REPORTES,
+        REPORT_IVA_BUTTON, REPORT_RETENCIONES_BUTTON, REPORT_FACTURAS_BUTTON, REPORT_PENDIENTES_BUTTON
+    }:
+        context.user_data.pop("pending_doc", None)
+        context.user_data.pop("awaiting_emit_docs", None)
+        context.user_data.pop("admin_state", None)
+        context.user_data.pop("admin_new_user", None)
+        context.user_data.pop("share_doc", None)
+    
     # Interceptar entradas de texto del administrador para registro de usuarios
     admin_state = context.user_data.get("admin_state")
     if admin_state:
@@ -3538,6 +3557,36 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "Selecciona una de las opciones de abajo:",
             reply_markup=_tributos_submenu_keyboard(),
             parse_mode="Markdown"
+        )
+        return
+
+    elif text == COTI_BUTTON:
+        if not _check_permission(update, "cotizaciones"):
+            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Cotizaciones.")
+            return
+        await _start_document_flow(update, context, "cotizacion")
+        return
+
+    elif text == NOTA_BUTTON:
+        if not _check_permission(update, "cotizaciones"):
+            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Notas de Entrega.")
+            return
+        await _start_document_flow(update, context, "nota")
+        return
+
+    elif text == VOICE_BUTTON:
+        context.user_data["voice_mode"] = True
+        await msg.reply_text(
+            "Modo voz activado. Envía ahora tu nota de voz con el requerimiento.",
+            reply_markup=_main_keyboard(update.effective_user.id),
+        )
+        return
+
+    elif text == VOICE_CANCEL_BUTTON:
+        context.user_data["voice_mode"] = False
+        await msg.reply_text(
+            "Modo voz desactivado.",
+            reply_markup=_main_keyboard(update.effective_user.id),
         )
         return
 
@@ -4048,30 +4097,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await msg.reply_text("Fecha guardada. Selecciona formato del comprobante.", reply_markup=kb)
         return
 
-    if text == VOICE_BUTTON:
-        context.user_data["voice_mode"] = True
-        await msg.reply_text(
-            "Modo voz activado. Envía ahora tu nota de voz con el requerimiento.",
-            reply_markup=_main_keyboard(),
-        )
-        return
-    if text == VOICE_CANCEL_BUTTON:
-        context.user_data["voice_mode"] = False
-        await msg.reply_text(
-            "Modo voz desactivado.",
-            reply_markup=_main_keyboard(),
-        )
-        return
-    if text == COTI_BUTTON:
-        await _start_document_flow(update, context, "cotizacion")
-        return
-    if text == NOTA_BUTTON:
-        await _start_document_flow(update, context, "nota")
-        return
     if context.user_data.get("voice_mode"):
         await msg.reply_text(
             "Modo voz activo: envía una nota de voz o pulsa «Cancelar voz».",
-            reply_markup=_main_keyboard(),
+            reply_markup=_main_keyboard(update.effective_user.id),
         )
         return
     await _process_intent(update, context, text)
