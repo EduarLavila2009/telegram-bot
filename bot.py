@@ -25,6 +25,104 @@ from .factura_compra_parse import parse_factura_compra_text, _take_eol_label, _n
 from .transcription import transcribe_audio_file
 from openpyxl import load_workbook
 
+class CompanyContext:
+    def __init__(self, user_id: int | str | None = None):
+        self.user_id = str(user_id) if user_id is not None else None
+        self.is_custom = False
+        self.company_id = None
+        self.company_name = "SUFEVICA"
+        self.company_rif = config.EMITTER_RIF
+        self.company_type = "Especial"
+        self.company_email = config.DEFAULT_ACCOUNTANT_EMAIL or ""
+        self.company_phone = ""
+        self.company_address = ""
+        self.color_primary = "#1A1B54" # Navy for SUFEVICA
+        self.dir_path = Path(__file__).resolve().parent
+        
+        # Default SUFEVICA paths
+        self.excel_path = config.EXCEL_PATH
+        self.facturas_compra_path = config.FACTURAS_COMPRA_PATH
+        self.facturas_recibidas_path = config.FACTURAS_RECIBIDAS_PATH
+        self.facturas_emitidas_path = config.FACTURAS_EMITIDAS_PATH
+        self.reportes_z_path = config.REPORTES_Z_PATH
+        self.productos_path = config.PRODUCTOS_PATH
+        self.retenciones_emitidas_dir = config.RETENCIONES_EMITIDAS_DIR
+        self.retenciones_islr_dir = config.RETENCIONES_ISLR_DIR
+        self.firma_sello_path = config.FIRMA_SELLO_PATH
+        self.generados_dir = Path(__file__).resolve().parent / "modulo_cotizaciones" / "generados"
+        self.historico_json_path = Path(__file__).resolve().parent / "modulo_cotizaciones" / "historico_documentos.json"
+        
+        if self.user_id:
+            user = user_manager.get_user(self.user_id)
+            if user and user.get("role") == "nueva_empresa":
+                self.is_custom = True
+                self.company_id = f"flashtax_{self.user_id}"
+                self.company_name = user.get("company_name", "FlashTax")
+                self.company_rif = user.get("company_rif", "J-00000000-0")
+                self.company_type = user.get("company_type", "Especial")
+                self.company_email = user.get("company_email", "")
+                self.company_phone = user.get("company_phone", "")
+                self.company_address = user.get("company_address", "")
+                self.color_primary = "#4F46E5" # Indigo for FlashTax
+                
+                # Custom paths under empresas/flashtax_<user_id>/
+                base_dir = Path(__file__).resolve().parent / "empresas" / self.company_id
+                self.dir_path = base_dir
+                
+                self.excel_path = base_dir / "RETEN-REC.xlsx"
+                self.facturas_compra_path = base_dir / "facturas_compra_recibidas.xlsx"
+                self.facturas_recibidas_path = base_dir / "FACTURAS-RECIBIDAS-NUEVO.xlsx"
+                self.facturas_emitidas_path = base_dir / "FACTURAS-EMITIDAS.xlsx"
+                self.reportes_z_path = base_dir / "REPORTES-Z-NUEVO.xlsx"
+                self.productos_path = base_dir / "inventario.xlsx"
+                self.retenciones_emitidas_dir = base_dir / "RETENCIONES-EMITIDAS-NUEVO"
+                self.retenciones_islr_dir = base_dir / "RETENCIONES-ISLR-EMITIDAS"
+                self.generados_dir = base_dir / "generados"
+                self.historico_json_path = base_dir / "historico_documentos.json"
+                
+                # Check for custom signature in company dir
+                custom_firma = base_dir / "firma_sello_transparente.png"
+                if custom_firma.exists():
+                    self.firma_sello_path = custom_firma
+                else:
+                    self.firma_sello_path = config.FIRMA_SELLO_PATH
+
+    def ensure_files(self) -> None:
+        """Asegura que el directorio y los archivos Excel base existan."""
+        if not self.is_custom:
+            return
+        
+        self.dir_path.mkdir(parents=True, exist_ok=True)
+        self.retenciones_emitidas_dir.mkdir(parents=True, exist_ok=True)
+        self.retenciones_islr_dir.mkdir(parents=True, exist_ok=True)
+        self.generados_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Inicializar excels base usando excel_store
+        excel_store.ensure_workbook(self.excel_path)
+        excel_store.ensure_factura_compra_workbook(self.facturas_compra_path)
+        excel_store.ensure_factura_compra_workbook(self.facturas_recibidas_path)
+        excel_store.ensure_ventas_workbook(self.facturas_emitidas_path)
+        excel_store.ensure_reporte_z_nuevo_workbook(self.reportes_z_path)
+        
+        # Inicializar inventario.xlsx si no existe
+        if not self.productos_path.exists():
+            from openpyxl import Workbook
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Productos"
+            ws.append(["Codigo", "Descripcion", "Precio", "Barras"])
+            wb.save(self.productos_path)
+            wb.close()
+
+def _get_company_context(update: Update | None) -> CompanyContext:
+    uid = None
+    if update and update.effective_user:
+        uid = update.effective_user.id
+    ctx = CompanyContext(uid)
+    if ctx.is_custom:
+        ctx.ensure_files()
+    return ctx
+
 # Configuración inicial del logger raíz. Se sobreescribirá en _setup_logging() con el archivo de log.
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -75,6 +173,7 @@ VOICE_BUTTON = "🎤 Activar comando de voz"
 VOICE_CANCEL_BUTTON = "❌ Cancelar voz"
 COTI_BUTTON = "📋 Nueva Cotización"
 NOTA_BUTTON = "📦 Nueva Nota de Entrega"
+HISTORIAL_BUTTON = "📂 Historial de Documentos"
 RETENTION_RATE = Decimal("0.75")
 
 # Nuevos botones de menú y submenú
@@ -102,12 +201,16 @@ def _main_keyboard(user_id: int | str = "") -> ReplyKeyboardMarkup:
     buttons = [
         [KeyboardButton(TRIBUTOS_BUTTON)],
         [KeyboardButton(COTI_BUTTON), KeyboardButton(NOTA_BUTTON)],
+        [KeyboardButton(HISTORIAL_BUTTON)],
         [KeyboardButton(VOICE_BUTTON), KeyboardButton(VOICE_CANCEL_BUTTON)],
     ]
     if user_id:
         user = user_manager.get_user(user_id)
-        if user and user.get("role") == "admin":
-            buttons.append([KeyboardButton(ADMIN_PANEL_BUTTON)])
+        if user:
+            if user.get("role") == "admin":
+                buttons.append([KeyboardButton(ADMIN_PANEL_BUTTON)])
+            elif user.get("role") == "nueva_empresa":
+                buttons.append([KeyboardButton("⚙️ Configurar Empresa")])
             
     return ReplyKeyboardMarkup(
         keyboard=buttons,
@@ -116,14 +219,30 @@ def _main_keyboard(user_id: int | str = "") -> ReplyKeyboardMarkup:
     )
 
 
-def _tributos_submenu_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
+def _tributos_submenu_keyboard(user_id: int | str = "") -> ReplyKeyboardMarkup:
+    # Si es un Contribuyente Ordinario de nueva_empresa, se quita SUBMENU_GENERAR_RETENCION ("✍️ Generar Retención")
+    company_is_ordinario = False
+    if user_id:
+        user = user_manager.get_user(user_id)
+        if user and user.get("role") == "nueva_empresa" and user.get("company_type") == "Ordinario":
+            company_is_ordinario = True
+
+    if company_is_ordinario:
+        kb_layout = [
+            [KeyboardButton(SUBMENU_CARGAR_FACTURA), KeyboardButton(SUBMENU_RETENCION_RECIBIDA)],
+            [KeyboardButton(SUBMENU_REPORTE_Z), KeyboardButton(SUBMENU_FACTURA_EMITIDA)],
+            [KeyboardButton(SUBMENU_GENERAR_REPORTES)],
+            [KeyboardButton(SUBMENU_VOLVER)],
+        ]
+    else:
+        kb_layout = [
             [KeyboardButton(SUBMENU_CARGAR_FACTURA), KeyboardButton(SUBMENU_RETENCION_RECIBIDA)],
             [KeyboardButton(SUBMENU_REPORTE_Z), KeyboardButton(SUBMENU_FACTURA_EMITIDA)],
             [KeyboardButton(SUBMENU_GENERAR_RETENCION), KeyboardButton(SUBMENU_GENERAR_REPORTES)],
             [KeyboardButton(SUBMENU_VOLVER)],
-        ],
+        ]
+    return ReplyKeyboardMarkup(
+        keyboard=kb_layout,
         resize_keyboard=True,
         one_time_keyboard=False,
     )
@@ -697,8 +816,9 @@ def _periodo_fiscal(d: date) -> str:
     return d.strftime("%Y-%m")
 
 
-def _reten_emit_monthly_path(emission_date: date) -> Path:
-    base_dir = config.RETENCIONES_EMITIDAS_DIR
+def _reten_emit_monthly_path(emission_date: date, user_id: int | str | None = None) -> Path:
+    ctx = CompanyContext(user_id)
+    base_dir = ctx.retenciones_emitidas_dir
     return excel_store.monthly_retencion_emitida_path(base_dir, emission_date)
 
 
@@ -710,8 +830,6 @@ def _totals_for_items(items: list[excel_store.FacturaCompraRow]) -> tuple[Decima
         iva_total += it.monto_iva or Decimal("0")
     retenido = (iva_total * RETENTION_RATE).quantize(Decimal("0.01"))
     return base_total, iva_total, retenido
-
-
 async def _start_emitir_retencion_flow(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -720,8 +838,12 @@ async def _start_emitir_retencion_flow(
     msg = update.effective_message
     if not msg:
         return
+    ctx = _get_company_context(update)
+    if ctx.is_custom and ctx.company_type == "Ordinario":
+        await msg.reply_text("⚠️ Opción Bloqueada: Los Contribuyentes Ordinarios no emiten comprobantes de retención de acuerdo con las normativas del SENIAT.")
+        return
     items = excel_store.load_facturas_by_document_numbers(
-        config.FACTURAS_RECIBIDAS_PATH,
+        ctx.facturas_recibidas_path,
         doc_numbers,
     )
     if not items:
@@ -748,7 +870,7 @@ async def _start_emitir_retencion_flow(
     provider_address = (items[0].direccion_fiscal_proveedor or "").strip()
     base_total, iva_total, retenido = _totals_for_items(items)
     emission_date = date.today()
-    monthly_path = _reten_emit_monthly_path(emission_date)
+    monthly_path = _reten_emit_monthly_path(emission_date, update.effective_user.id)
     next_num = excel_store.next_retencion_emitida_number(
         monthly_path,
         emission_date=emission_date,
@@ -1047,6 +1169,306 @@ def _is_sufevica_chat(update: Update) -> bool:
     return False
 
 
+def _match_items_against_inventory(productos_path, items_list) -> list:
+    matched_items = []
+    for it in items_list:
+        code = (it.get("code") or "").strip()
+        desc = (it.get("desc") or "").strip()
+        try:
+            qty = float(it.get("qty") or 1.0)
+        except Exception:
+            qty = 1.0
+        try:
+            price = float(it.get("priceUsd") or 0.0)
+        except Exception:
+            price = 0.0
+
+        found_products = []
+        if code:
+            found_products = excel_store.search_products_in_excel(productos_path, code, search_by="code")
+        if not found_products and desc:
+            found_products = excel_store.search_products_in_excel(productos_path, desc, search_by="desc")
+
+        if found_products:
+            matched_p = found_products[0]
+            matched_items.append({
+                "code": matched_p["code"],
+                "desc": matched_p["description"],
+                "qty": qty,
+                "priceUsd": matched_p["price"],
+                "totalUsd": qty * matched_p["price"]
+            })
+        else:
+            matched_items.append({
+                "code": code,
+                "desc": desc,
+                "qty": qty,
+                "priceUsd": price,
+                "totalUsd": qty * price
+            })
+    return matched_items
+
+
+def _register_document_in_history(update: Update, doc_type: str, doc_number: str, client_name: str, client_rif: str, total_amount: str, temp_pdf_path: Path | str) -> Path:
+    """
+    Registra un documento generado (cotización, nota, retención) en el archivo JSON
+    de historial del tenant y guarda el PDF de forma permanente en su directorio.
+    Retorna la ruta permanente del PDF.
+    """
+    ctx = _get_company_context(update)
+    ctx.generados_dir.mkdir(parents=True, exist_ok=True)
+    
+    src_path = Path(temp_pdf_path)
+    dest_path = ctx.generados_dir / src_path.name
+    
+    if src_path.resolve() != dest_path.resolve():
+        try:
+            import shutil
+            shutil.copy2(src_path, dest_path)
+        except Exception as e:
+            logger.error(f"Error al copiar archivo PDF al historial: {e}")
+        
+    history = []
+    if ctx.historico_json_path.exists():
+        try:
+            import json
+            with open(ctx.historico_json_path, "r", encoding="utf-8") as f:
+                history = json.load(f)
+        except Exception as e:
+            logger.error(f"Error al leer historial JSON: {e}")
+            
+    from datetime import date
+    import time
+    entry = {
+        "doc_type": doc_type,
+        "doc_number": doc_number,
+        "date": date.today().strftime("%Y-%m-%d"),
+        "client_name": client_name,
+        "client_rif": client_rif,
+        "total_amount": total_amount,
+        "pdf_filename": src_path.name,
+        "timestamp": time.time()
+    }
+    history.append(entry)
+    
+    try:
+        import json
+        with open(ctx.historico_json_path, "w", encoding="utf-8") as f:
+            json.dump(history, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        logger.error(f"Error al guardar historial JSON: {e}")
+        
+    return dest_path
+
+
+async def _send_history_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if not msg:
+        return
+        
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Cotizaciones", callback_data="history_cat:cotizacion")],
+        [InlineKeyboardButton("📦 Notas de Entrega", callback_data="history_cat:nota")],
+        [InlineKeyboardButton("✍️ Retenciones de IVA", callback_data="history_cat:retencion_iva")],
+        [InlineKeyboardButton("🏛️ Retenciones de ISLR", callback_data="history_cat:retencion_islr")],
+        [InlineKeyboardButton("❌ Cerrar", callback_data="history_close")]
+    ])
+    
+    await msg.reply_text(
+        "📂 *HISTORIAL DE DOCUMENTOS GENERADOS* 📂\n\n"
+        "Selecciona una categoría de documento para consultar o reimprimir:",
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+
+
+async def handle_history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    if not q:
+        return
+    await q.answer()
+    data = q.data
+    msg = q.message
+    if not msg:
+        return
+        
+    ctx = _get_company_context(update)
+    
+    if data == "history_menu":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 Cotizaciones", callback_data="history_cat:cotizacion")],
+            [InlineKeyboardButton("📦 Notas de Entrega", callback_data="history_cat:nota")],
+            [InlineKeyboardButton("✍️ Retenciones de IVA", callback_data="history_cat:retencion_iva")],
+            [InlineKeyboardButton("🏛️ Retenciones de ISLR", callback_data="history_cat:retencion_islr")],
+            [InlineKeyboardButton("❌ Cerrar", callback_data="history_close")]
+        ])
+        await q.edit_message_text(
+            "📂 *HISTORIAL DE DOCUMENTOS GENERADOS* 📂\n\n"
+            "Selecciona una categoría de documento para consultar o reimprimir:",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        
+    elif data.startswith("history_cat:"):
+        cat = data.split(":", 1)[1]
+        
+        history = []
+        if ctx.historico_json_path.exists():
+            try:
+                import json
+                with open(ctx.historico_json_path, "r", encoding="utf-8") as f:
+                    history = json.load(f)
+            except Exception as e:
+                logger.error(f"Error al leer historial: {e}")
+                
+        filtered = [(idx, entry) for idx, entry in enumerate(history) if entry.get("doc_type") == cat]
+        
+        cat_names = {
+            "cotizacion": "Cotizaciones",
+            "nota": "Notas de Entrega",
+            "retencion_iva": "Retenciones de IVA",
+            "retencion_islr": "Retenciones de ISLR"
+        }
+        cat_name = cat_names.get(cat, cat.capitalize())
+        
+        if not filtered:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver", callback_data="history_menu")]])
+            await q.edit_message_text(
+                f"📂 *HISTORIAL > {cat_name.upper()}*\n\n"
+                f"⚠️ No se encontraron documentos registrados en esta categoría.",
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+            return
+            
+        filtered.sort(key=lambda x: x[1].get("timestamp", 0), reverse=True)
+        recent = filtered[:8]
+        
+        kb_list = []
+        for idx, entry in recent:
+            doc_num = entry.get("doc_number", "—")
+            client = entry.get("client_name", "Cliente")
+            amount = entry.get("total_amount", "—")
+            label = f"Nro {doc_num} - {client[:18]} ({amount})"
+            kb_list.append([InlineKeyboardButton(label, callback_data=f"history_view:{idx}")])
+            
+        kb_list.append([InlineKeyboardButton("🔙 Volver", callback_data="history_menu")])
+        kb = InlineKeyboardMarkup(kb_list)
+        
+        await q.edit_message_text(
+            f"📂 *HISTORIAL > {cat_name.upper()}*\n\n"
+            f"Selecciona un documento para ver sus detalles o reimprimirlo:",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        
+    elif data.startswith("history_view:"):
+        idx_str = data.split(":", 1)[1]
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            return
+            
+        history = []
+        if ctx.historico_json_path.exists():
+            try:
+                import json
+                with open(ctx.historico_json_path, "r", encoding="utf-8") as f:
+                    history = json.load(f)
+            except Exception as e:
+                logger.error(f"Error: {e}")
+                
+        if idx < 0 or idx >= len(history):
+            await q.edit_message_text("❌ Documento no encontrado.")
+            return
+            
+        entry = history[idx]
+        doc_type = entry.get("doc_type")
+        doc_num = entry.get("doc_number", "—")
+        client = entry.get("client_name", "—")
+        rif = entry.get("client_rif", "—")
+        date_str = entry.get("date", "—")
+        amount = entry.get("total_amount", "—")
+        
+        doc_names = {
+            "cotizacion": "Cotización",
+            "nota": "Nota de Entrega",
+            "retencion_iva": "Retención de IVA",
+            "retencion_islr": "Retención de ISLR"
+        }
+        doc_name = doc_names.get(doc_type, "Documento")
+        
+        details = (
+            f"📄 *DETALLE DEL DOCUMENTO*\n\n"
+            f"📌 *Tipo:* {doc_name}\n"
+            f"🔢 *Número:* {doc_num}\n"
+            f"📅 *Fecha:* {date_str}\n"
+            f"👤 *Cliente / Proveedor:* {client}\n"
+            f"🆔 *RIF/CI:* {rif}\n"
+            f"💰 *Monto Total:* {amount}\n"
+        )
+        
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📥 Reimprimir / Descargar (PDF)", callback_data=f"history_print:{idx}")],
+            [InlineKeyboardButton("🔙 Volver a la Lista", callback_data=f"history_cat:{doc_type}")],
+            [InlineKeyboardButton("❌ Cerrar", callback_data="history_close")]
+        ])
+        
+        await q.edit_message_text(details, reply_markup=kb, parse_mode="Markdown")
+        
+    elif data.startswith("history_print:"):
+        idx_str = data.split(":", 1)[1]
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            return
+            
+        history = []
+        if ctx.historico_json_path.exists():
+            try:
+                import json
+                with open(ctx.historico_json_path, "r", encoding="utf-8") as f:
+                    history = json.load(f)
+            except Exception as e:
+                logger.error(f"Error: {e}")
+                
+        if idx < 0 or idx >= len(history):
+            await q.answer("❌ Documento no encontrado.", show_alert=True)
+            return
+            
+        entry = history[idx]
+        pdf_filename = entry.get("pdf_filename")
+        if not pdf_filename:
+            await q.answer("❌ Nombre de archivo no registrado.", show_alert=True)
+            return
+            
+        pdf_path = ctx.generados_dir / pdf_filename
+        if not pdf_path.exists():
+            await q.answer("⚠️ El archivo PDF ya no se encuentra en el servidor.", show_alert=True)
+            return
+            
+        doc_names = {
+            "cotizacion": "Cotizacion",
+            "nota": "Nota_de_Entrega",
+            "retencion_iva": "Retencion_IVA",
+            "retencion_islr": "Retencion_ISLR"
+        }
+        doc_name = doc_names.get(entry.get("doc_type"), "Documento")
+        
+        await msg.reply_document(
+            document=str(pdf_path),
+            filename=f"{doc_name}_{entry.get('doc_number')}.pdf",
+            caption=f"📄 *Reimpresión:* {doc_name} Nro {entry.get('doc_number')}",
+            parse_mode="Markdown"
+        )
+        
+    elif data == "history_close":
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+
+
 def _parse_document_text_explicit(text: str, forced_type: str) -> dict | None:
     doc_data = _parse_document_text(text)
     if doc_data is None:
@@ -1248,17 +1670,18 @@ SYNC_FILES = {
     "productos": config.PRODUCTOS_PATH.name
 }
 
-def get_sync_file_path(key: str) -> Path | None:
+def get_sync_file_path(key: str, user_id: int | str | None = None) -> Path | None:
+    ctx = CompanyContext(user_id)
     if key == "reten_rec":
-        return config.EXCEL_PATH
+        return ctx.excel_path
     elif key == "facturas_recibidas":
-        return config.FACTURAS_RECIBIDAS_PATH
+        return ctx.facturas_recibidas_path
     elif key == "facturas_emitidas":
-        return config.FACTURAS_EMITIDAS_PATH
+        return ctx.facturas_emitidas_path
     elif key == "reportes_z":
-        return config.REPORTES_Z_PATH
+        return ctx.reportes_z_path
     elif key == "productos":
-        return config.PRODUCTOS_PATH
+        return ctx.productos_path
     return None
 
 _last_mtime_cache = {}
@@ -1301,7 +1724,7 @@ async def check_and_sync_files(context: ContextTypes.DEFAULT_TYPE) -> None:
     current_state = await _get_pinned_state(context.bot)
     
     for key, filename in SYNC_FILES.items():
-        path = get_sync_file_path(key)
+        path = get_sync_file_path(key, update.effective_user.id)
         if not path or not path.exists():
             continue
         mtime = os.path.getmtime(path)
@@ -1367,7 +1790,7 @@ async def descargar_excel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     sent_any = False
     for key, filename in SYNC_FILES.items():
-        path = get_sync_file_path(key)
+        path = get_sync_file_path(key, update.effective_user.id)
         if path and path.exists():
             try:
                 with open(path, "rb") as f:
@@ -1381,7 +1804,6 @@ async def descargar_excel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
                 logger.error(f"Error al enviar {filename}: {e}")
     if not sent_any:
         await msg.reply_text("⚠️ No se encontraron archivos de Excel locales en el servidor.")
-
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if not msg or not msg.document:
@@ -1392,6 +1814,28 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.warning(f"Documento rechazado por falta de permisos (chat_id={msg.chat_id})")
         await _deny(update)
         return
+
+    # Interceptar firma y sello
+    if context.user_data.get("awaiting_company_signature"):
+        context.user_data.pop("awaiting_company_signature", None)
+        ctx = _get_company_context(update)
+        if not ctx.is_custom:
+            await msg.reply_text("❌ Solo las empresas personalizadas pueden subir firma y sello.")
+            return
+        
+        status_msg = await msg.reply_text("📥 *Guardando imagen de firma y sello...*", parse_mode="Markdown")
+        try:
+            tg_file = await context.bot.get_file(msg.document.file_id)
+            target_path = ctx.dir_path / "firma_sello_transparente.png"
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            await tg_file.download_to_drive(custom_path=str(target_path))
+            await status_msg.edit_text(f"✅ *Firma y Sello actualizados con éxito!*\nGuardado en `{target_path.name}`", parse_mode="Markdown")
+            await _show_company_config_menu(update, context)
+        except Exception as e:
+            logger.error(f"Error al guardar firma y sello desde documento: {e}")
+            await status_msg.edit_text(f"❌ *Error al guardar la firma y sello:* `{e}`", parse_mode="Markdown")
+        return
+
     matched_key = None
     for key, name in SYNC_FILES.items():
         if filename.lower() == name.lower():
@@ -1404,7 +1848,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             matched_key = "productos"
             
     if matched_key:
-        path = get_sync_file_path(matched_key)
+        path = get_sync_file_path(matched_key, update.effective_user.id)
         status_msg = await msg.reply_text(f"📥 *Recibido {filename}. Procesando y reemplazando archivo local...*", parse_mode="Markdown")
         try:
             tg_file = await context.bot.get_file(msg.document.file_id)
@@ -1412,14 +1856,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await tg_file.download_to_drive(custom_path=str(path))
             import os
             _last_mtime_cache[matched_key] = os.path.getmtime(path)
-            current_state = await _get_pinned_state(context.bot)
-            current_state[matched_key] = msg.document.file_id
-            await _save_pinned_state(context.bot, current_state)
+            
+            ctx = _get_company_context(update)
+            if not ctx.is_custom:
+                current_state = await _get_pinned_state(context.bot)
+                current_state[matched_key] = msg.document.file_id
+                await _save_pinned_state(context.bot, current_state)
             await status_msg.edit_text(f"✅ *¡Archivo `{filename}` actualizado con éxito!* El bot trabajará con esta nueva versión.", parse_mode="Markdown")
         except Exception as e:
             logger.error(f"Error al descargar archivo subido {filename}: {e}")
             await status_msg.edit_text(f"❌ *Error al procesar el archivo:* `{e}`", parse_mode="Markdown")
-
 
 def _parse_document_text_relaxed(text: str, doc_type: str) -> dict | None:
     client_name = _take_eol_label(text, ("cliente", "razon social", "razón social", "nombre", "comprador", "dirigido a"))
@@ -1993,7 +2439,6 @@ def _normalize_phone_for_whatsapp(phone: str) -> str:
         digits = "58" + digits
     return digits
 
-
 async def _generate_document_from_parsed_data(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -2012,9 +2457,18 @@ async def _generate_document_from_parsed_data(
     emoji = "📋" if doc_type == "cotizacion" else "📦"
     
     try:
-        generados_dir = Path(__file__).resolve().parent / "modulo_cotizaciones" / "generados"
+        ctx = _get_company_context(update)
+        generados_dir = ctx.generados_dir
         generados_dir.mkdir(parents=True, exist_ok=True)
-        
+        # Enriquecer doc_data con los datos dinámicos de la empresa
+        doc_data["company_brand"] = "FlashTax" if ctx.is_custom else "SUFEVICA"
+        doc_data["company_name"] = ctx.company_name
+        doc_data["company_rif"] = ctx.company_rif
+        doc_data["primary_color"] = ctx.color_primary
+        if ctx.company_address:
+            doc_data["company_address"] = f"{ctx.company_address}\nTeléfono: {ctx.company_phone}\nE-mail: {ctx.company_email}"
+        doc_data["signature_path"] = str(ctx.firma_sello_path)
+
         # Generar el PDF oficial y estético en segundo plano automáticamente
         from .pdf_generator import generate_document_pdf
         pdf_filename = f"{title_up}_{doc_num}.pdf"
@@ -2038,12 +2492,14 @@ async def _generate_document_from_parsed_data(
         
         # Construir mensaje de WhatsApp
         import urllib.parse
+        brand_name = "FlashTax" if ctx.is_custom else "SUFEVICA"
+        user_name = update.effective_user.first_name if update.effective_user else "Administrador"
         wa_msg = (
             f"Estimado/a *{client_name}*,\n\n"
             f"Le adjunto su *{title_up} Nro {doc_num}* por un monto total de *{symbol} {formatted_total}*.\n\n"
             f"Quedo a su entera disposición.\n\n"
             f"Atentamente,\n"
-            f"*FREDDY LOPEZ* (SUFEVICA)"
+            f"*{user_name.upper()}* ({brand_name})"
         )
         encoded_text = urllib.parse.quote(wa_msg)
         normalized_phone = _normalize_phone_for_whatsapp(doc_data['client'].get('phone', ''))
@@ -2052,6 +2508,17 @@ async def _generate_document_from_parsed_data(
             wa_url = f"https://api.whatsapp.com/send?phone={normalized_phone}&text={encoded_text}"
         else:
             wa_url = f"https://api.whatsapp.com/send?text={encoded_text}"
+            
+        # Registrar el documento generado en el historial
+        _register_document_in_history(
+            update=update,
+            doc_type=doc_type,
+            doc_number=doc_num,
+            client_name=client_name,
+            client_rif=doc_data['client'].get('rif', ''),
+            total_amount=f"{symbol} {formatted_total}",
+            temp_pdf_path=pdf_output_path
+        )
             
         # Almacenar en user_data para el flujo de envío de correo
         context.user_data["share_doc"] = {
@@ -2117,9 +2584,13 @@ async def _process_intent(
         await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
         return
 
+    ctx = _get_company_context(update)
     is_channel = update.channel_post is not None or update.edited_channel_post is not None
     emit_docs = _parse_emitir_retencion_request(text)
     if emit_docs is not None:
+        if ctx.is_custom and ctx.company_type == "Ordinario":
+            await msg.reply_text("⚠️ Opción Bloqueada: Los Contribuyentes Ordinarios no emiten comprobantes de retención de acuerdo con las normativas del SENIAT.")
+            return
         await _start_emitir_retencion_flow(update, context, emit_docs)
         return
     # Registrar automáticamente si el texto tiene formato de retención de ISLR
@@ -2131,7 +2602,7 @@ async def _process_intent(
             return
         try:
             emission_date = _parse_user_date(islr_data["fecha_emision"]) or date.today()
-            monthly_path = excel_store.monthly_retencion_islr_path(config.RETENCIONES_ISLR_DIR, emission_date)
+            monthly_path = excel_store.monthly_retencion_islr_path(ctx.retenciones_islr_dir, emission_date)
             
             base_val = excel_store.parse_amount_ves_string(islr_data["base_imponible"]) or Decimal("0")
             rate_val = excel_store.parse_amount_ves_string(islr_data["porcentaje_retencion"]) or Decimal("0")
@@ -2176,7 +2647,7 @@ async def _process_intent(
             return
         try:
             inserted = excel_store.append_record(
-                config.EXCEL_PATH,
+                ctx.excel_path,
                 fecha_emision=ret_data["fecha_emision"],
                 numero_comprobante=ret_data["numero_comprobante"],
                 rif=ret_data["rif"],
@@ -2207,7 +2678,7 @@ async def _process_intent(
         await _notify_same_source_channel(
             update,
             context,
-            f"✅ Datos registrados correctamente en {config.EXCEL_PATH.name}.",
+            f"✅ Datos registrados correctamente en {ctx.excel_path.name}.",
         )
         return
 
@@ -2218,7 +2689,7 @@ async def _process_intent(
             return
         try:
             inserted = excel_store.append_reporte_z_nuevo(
-                config.REPORTES_Z_PATH,
+                ctx.reportes_z_path,
                 numero_reporte=z_nuevo["numero_reporte"],
                 fecha_emision=z_nuevo["fecha_emision"],
                 sub_total=z_nuevo["sub_total"],
@@ -2246,7 +2717,7 @@ async def _process_intent(
         await _notify_same_source_channel(
             update,
             context,
-            f"✅ Reporte Z Nro {z_nuevo['numero_reporte']} registrado correctamente en {config.REPORTES_Z_PATH.name}.",
+            f"✅ Reporte Z Nro {z_nuevo['numero_reporte']} registrado correctamente en {ctx.reportes_z_path.name}.",
         )
         return
 
@@ -2274,7 +2745,7 @@ async def _process_intent(
             
             if v_data["clasificacion"] == "Reporte Z":
                 inserted = excel_store.append_reporte_z_nuevo(
-                    config.REPORTES_Z_PATH,
+                    ctx.reportes_z_path,
                     numero_reporte=v_data["numero_documento"],
                     fecha_emision=v_data["fecha"],
                     sub_total=base_str,
@@ -2286,7 +2757,7 @@ async def _process_intent(
                 )
             else:
                 inserted = excel_store.append_venta_record(
-                    config.FACTURAS_EMITIDAS_PATH,
+                    ctx.facturas_emitidas_path,
                     clasificacion=v_data["clasificacion"],
                     estado=v_data["estado"],
                     fecha=v_data["fecha"],
@@ -2313,7 +2784,7 @@ async def _process_intent(
             )
             return
             
-        path_name = config.REPORTES_Z_PATH.name if v_data["clasificacion"] == "Reporte Z" else config.FACTURAS_EMITIDAS_PATH.name
+        path_name = ctx.reportes_z_path.name if v_data["clasificacion"] == "Reporte Z" else ctx.facturas_emitidas_path.name
         await _notify_same_source_channel(
             update,
             context,
@@ -2328,16 +2799,17 @@ async def _process_intent(
         is_sale = False
         if fc.proveedor_rif:
             clean_rif = re.sub(r"\D", "", str(fc.proveedor_rif))
-            if "40194130" in clean_rif:
+            clean_emitter_rif = re.sub(r"\D", "", str(ctx.company_rif))
+            if clean_emitter_rif and clean_emitter_rif in clean_rif:
                 is_sale = True
-        if not is_sale and fc.proveedor and "SUFEVICA" in str(fc.proveedor).upper():
+        if not is_sale and fc.proveedor and ctx.company_name.upper() in str(fc.proveedor).upper():
             is_sale = True
 
         if is_sale:
             # Factura emitida por SUFEVICA -> Venta
             try:
                 inserted = excel_store.append_venta_record(
-                    config.FACTURAS_EMITIDAS_PATH,
+                    ctx.facturas_emitidas_path,
                     clasificacion="Factura Emitida",
                     estado="REGISTRADO",
                     fecha=fc.fecha_emision,
@@ -2365,7 +2837,7 @@ async def _process_intent(
             await _notify_same_source_channel(
                 update,
                 context,
-                f"✅ Factura de venta Nro {fc.numero_documento or '—'} registrada correctamente en {config.FACTURAS_EMITIDAS_PATH.name}.",
+                f"✅ Factura de venta Nro {fc.numero_documento or '—'} registrada correctamente en {ctx.facturas_emitidas_path.name}.",
             )
             return
         else:
@@ -2387,7 +2859,7 @@ async def _process_intent(
                 warn = ""
             try:
                 inserted = excel_store.append_factura_compra(
-                    config.FACTURAS_RECIBIDAS_PATH,
+                    ctx.facturas_recibidas_path,
                     tipo_documento=fc.tipo_documento,
                     fecha_emision=fc.fecha_emision,
                     fecha_vencimiento=fc.fecha_vencimiento,
@@ -2424,35 +2896,35 @@ async def _process_intent(
                 update,
                 context,
                 "✅ Datos registrados correctamente en "
-                f"{config.FACTURAS_RECIBIDAS_PATH.name} (Doc {fc.numero_documento or '—'}).",
+                f"{ctx.facturas_recibidas_path.name} (Doc {fc.numero_documento or '—'}).",
             )
             return
 
     intent = _match_intent(text)
     if intent == "send_facturas_compra_excel":
-        excel_store.ensure_factura_compra_workbook(config.FACTURAS_RECIBIDAS_PATH)
+        excel_store.ensure_factura_compra_workbook(ctx.facturas_recibidas_path)
         await msg.reply_document(
-            document=str(config.FACTURAS_RECIBIDAS_PATH),
-            filename=config.FACTURAS_RECIBIDAS_PATH.name,
+            document=str(ctx.facturas_recibidas_path),
+            filename=ctx.facturas_recibidas_path.name,
             caption="Facturas de compra / recibidas (Subtotal, IVA, Total, etc.).",
         )
         return
     if intent == "send_excel":
-        if not config.EXCEL_PATH.exists():
+        if not ctx.excel_path.exists():
             await msg.reply_text(
                 "Todavía no existe el archivo Excel. Registra una retención primero "
                 "o revisa EXCEL_PATH en .env."
             )
             return
         await msg.reply_document(
-            document=str(config.EXCEL_PATH),
-            filename=config.EXCEL_PATH.name,
+            document=str(ctx.excel_path),
+            filename=ctx.excel_path.name,
             caption="consolidado_financiero.xlsx (retenciones; no es el de facturas compra).",
         )
         return
     if intent == "summary_today":
         today = date.today()
-        n, total = excel_store.summary_for_date(config.EXCEL_PATH, today)
+        n, total = excel_store.summary_for_date(ctx.excel_path, today)
         await msg.reply_text(
             f"Resumen del {today.strftime('%d/%m/%Y')}: {n} registro(s). "
             f"Suma de montos: {total}"
@@ -2461,7 +2933,14 @@ async def _process_intent(
     if intent == "tributos_report":
         today = date.today()
         fortnight = 1 if today.day <= 15 else 2
-        report = tributario_engine.get_compromiso_tributario_report(today.year, today.month, fortnight)
+        report = tributario_engine.get_compromiso_tributario_report(
+            today.year, today.month, fortnight,
+            facturas_emitidas_path=ctx.facturas_emitidas_path,
+            reportes_z_path=ctx.reportes_z_path,
+            retenciones_emitidas_dir=ctx.retenciones_emitidas_dir,
+            excel_path=ctx.excel_path,
+            retenciones_islr_dir=ctx.retenciones_islr_dir
+        )
         text = format_tributos_report(report)
         kb = _tributos_keyboard(today.year, today.month, fortnight, _generate_short_summary(report))
         await msg.reply_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -2486,7 +2965,7 @@ async def _process_intent(
             return
         date_from, date_to, out_fmt = parsed
         records = excel_store.retenciones_by_document_date(
-            config.EXCEL_PATH,
+            ctx.excel_path,
             date_from=date_from,
             date_to=date_to,
         )
@@ -2555,7 +3034,8 @@ async def _emitir_retencion_generate(
     if not await _check_and_consume_quota(update):
         return
     docs = list(pending.get("docs", []))
-    items = excel_store.load_facturas_by_document_numbers(config.FACTURAS_RECIBIDAS_PATH, docs)
+    ctx = _get_company_context(update)
+    items = excel_store.load_facturas_by_document_numbers(ctx.facturas_recibidas_path, docs)
     if not items:
         await msg.reply_text("No encontré las facturas solicitadas al momento de emitir.")
         context.user_data.pop("pending_emit_ret", None)
@@ -2565,7 +3045,7 @@ async def _emitir_retencion_generate(
     if emission_date is None:
         emission_date = date.today()
         emission_date_str = emission_date.strftime("%d/%m/%Y")
-    monthly_path = _reten_emit_monthly_path(emission_date)
+    monthly_path = _reten_emit_monthly_path(emission_date, update.effective_user.id)
     seq_mode = str(pending.get("seq_mode") or "auto")
     if seq_mode == "manual":
         num_comp = str(pending.get("manual_num") or "").strip()
@@ -2607,8 +3087,8 @@ async def _emitir_retencion_generate(
         formato_salida=out_fmt,
     )
     suffix = ".xlsx" if out_fmt == "excel" else ".pdf"
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-        out_path = Path(tmp.name)
+    ctx.generados_dir.mkdir(parents=True, exist_ok=True)
+    out_path = ctx.generados_dir / f"COMPROBANTE-RET-{num_comp}{suffix}"
     try:
         if out_fmt == "excel":
             excel_store.export_comprobante_emitido_excel(
@@ -2622,6 +3102,8 @@ async def _emitir_retencion_generate(
                 direccion_fiscal_prov=provider_address,
                 items=items,
                 porcentaje_retencion=RETENTION_RATE,
+                emisor_nombre=ctx.company_name,
+                emisor_rif=ctx.company_rif,
             )
         else:
             excel_store.export_comprobante_emitido_pdf(
@@ -2635,8 +3117,22 @@ async def _emitir_retencion_generate(
                 direccion_fiscal_prov=provider_address,
                 items=items,
                 porcentaje_retencion=RETENTION_RATE,
-                firma_sello_path=config.FIRMA_SELLO_PATH,
+                firma_sello_path=ctx.firma_sello_path,
+                emisor_nombre=ctx.company_name,
+                emisor_rif=ctx.company_rif,
             )
+        
+        # Registrar en el historial
+        _register_document_in_history(
+            update=update,
+            doc_type="retencion_iva",
+            doc_number=num_comp,
+            client_name=provider,
+            client_rif=provider_rif,
+            total_amount=f"Bs. {retenido:,.2f}",
+            temp_pdf_path=out_path
+        )
+        
         await msg.reply_document(
             document=str(out_path),
             filename=f"COMPROBANTE-RET-{num_comp}{suffix}",
@@ -2645,7 +3141,7 @@ async def _emitir_retencion_generate(
             ),
         )
     finally:
-        out_path.unlink(missing_ok=True)
+        pass
     context.user_data.pop("pending_emit_ret", None)
 
 
@@ -2670,7 +3166,7 @@ async def handle_emit_retention_callback(
         emission_date = _parse_user_date(str(pending.get("emission_date") or ""))
         if emission_date is None:
             emission_date = date.today()
-        monthly_path = _reten_emit_monthly_path(emission_date)
+        monthly_path = _reten_emit_monthly_path(emission_date, update.effective_user.id)
         next_num = excel_store.next_retencion_emitida_number(
             monthly_path,
             emission_date=emission_date,
@@ -2742,6 +3238,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     context.user_data["voice_mode"] = False
     context.user_data.pop("pending_doc", None)
+    context.user_data.pop("active_menu", None)
     context.user_data.pop("awaiting_emit_docs", None)
     context.user_data.pop("admin_state", None)
     context.user_data.pop("admin_new_user", None)
@@ -2851,10 +3348,46 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not msg.photo:
         return
 
+    # Interceptar firma y sello
+    if context.user_data.get("awaiting_company_signature"):
+        context.user_data.pop("awaiting_company_signature", None)
+        ctx = _get_company_context(update)
+        if not ctx.is_custom:
+            await msg.reply_text("❌ Solo las empresas personalizadas pueden subir firma y sello.")
+            return
+        
+        status_msg = await msg.reply_text("📥 *Guardando imagen de firma y sello...*", parse_mode="Markdown")
+        try:
+            photo = msg.photo[-1]
+            tg_file = await context.bot.get_file(photo.file_id)
+            target_path = ctx.dir_path / "firma_sello_transparente.png"
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            await tg_file.download_to_drive(custom_path=str(target_path))
+            await status_msg.edit_text(f"✅ *Firma y Sello actualizados con éxito!*\nGuardado en `{target_path.name}`", parse_mode="Markdown")
+            await _show_company_config_menu(update, context)
+        except Exception as e:
+            logger.error(f"Error al guardar firma y sello desde foto: {e}")
+            await status_msg.edit_text(f"❌ *Error al guardar la firma y sello:* `{e}`", parse_mode="Markdown")
+        return
+
     pending_doc = context.user_data.get("pending_doc")
-    if pending_doc and pending_doc.get("awaiting") == "search_barcode":
+    if not pending_doc:
+        active_menu = context.user_data.get("active_menu")
+        if active_menu in ("cotizacion", "nota"):
+            pending_doc = {
+                "type": active_menu,
+                "awaiting": "text_data"
+            }
+            context.user_data["pending_doc"] = pending_doc
+
+    if pending_doc and pending_doc.get("awaiting") in ("search_barcode", "search_ocr"):
         photo = msg.photo[-1]
-        status_msg = await msg.reply_text("📥 *Escaneando código de barras con IA (Gemini)...*", parse_mode="Markdown")
+        mode = pending_doc.get("awaiting")
+        
+        status_msg = await msg.reply_text(
+            "📥 *Escaneando código de barras con IA (Gemini)...*" if mode == "search_barcode" else "📥 *Analizando imagen del producto con IA (Gemini OCR)...*", 
+            parse_mode="Markdown"
+        )
         
         suffix = ".jpg"
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
@@ -2869,11 +3402,23 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             import os
             
             img = Image.open(tmp_path)
-            barcode_val = ocr_extract.extract_barcode_from_image(img)
             
-            if barcode_val != "NONE":
-                # Buscar en el Excel
-                products = excel_store.search_products_in_excel(config.PRODUCTOS_PATH, barcode_val, search_by="code")
+            if mode == "search_barcode":
+                query_val = ocr_extract.extract_barcode_from_image(img)
+            else:
+                query_val = ocr_extract.extract_product_query_from_image(img)
+                
+            if query_val != "NONE":
+                ctx = _get_company_context(update)
+                products = []
+                if mode == "search_barcode":
+                    products = excel_store.search_products_in_excel(ctx.productos_path, query_val, search_by="code")
+                else:
+                    # For OCR, try searching by description first, then code
+                    products = excel_store.search_products_in_excel(ctx.productos_path, query_val, search_by="desc")
+                    if not products:
+                        products = excel_store.search_products_in_excel(ctx.productos_path, query_val, search_by="code")
+                
                 if products:
                     if len(products) == 1:
                         product = products[0]
@@ -2896,14 +3441,17 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                             except Exception:
                                 pass
                                 
+                        import html
+                        desc_esc = html.escape(product['description'])
+                        code_esc = html.escape(product['code'])
                         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")]])
                         prompt = await msg.reply_text(
-                            f"✅ *Código Escaneado:* `{barcode_val}`\n\n"
-                            f"Producto: *{product['description']}* (`{product['code']}`)\n"
-                            f"Precio Unitario: *${product['price']:.2f}*\n\n"
-                            f"Por favor, escribe la *cantidad* a cotizar / usar para este producto:",
+                            f"✅ <b>Producto Encontrado:</b>\n\n"
+                            f"Producto: <b>{desc_esc}</b> (<code>{code_esc}</code>)\n"
+                            f"Precio Unitario: <b>${product['price']:.2f}</b>\n\n"
+                            f"Por favor, escribe la <b>cantidad</b> a cotizar / usar para este producto:",
                             reply_markup=kb,
-                            parse_mode="Markdown"
+                            parse_mode="HTML"
                         )
                         pending_doc["prompt_message_id"] = prompt.message_id
                     else:
@@ -2930,13 +3478,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                             btn_text = f"[{p['code']}] {p['description'][:25]} (${p['price']:.2f})"
                             kb_list.append([InlineKeyboardButton(btn_text, callback_data=f"coti_build_select_p:{idx}")])
                         kb_list.append([
-                            InlineKeyboardButton("📷 Escanear de Nuevo", callback_data="coti_build_search_barcode"),
+                            InlineKeyboardButton("📸 Escanear de Nuevo", callback_data="coti_build_search_barcode" if mode == "search_barcode" else "coti_build_search_ocr"),
                             InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")
                         ])
                         kb = InlineKeyboardMarkup(kb_list)
                         prompt = await msg.reply_text(
-                            f"✅ *Código Escaneado:* `{barcode_val}`\n\n"
-                            f"🔍 Se encontraron múltiples coincidencias ({len(products)}). Selecciona el producto exacto de abajo:",
+                            f"🔍 *Múltiples coincidencias encontradas para \"{html.escape(query_val)}\" ({len(products)}):*\n"
+                            f"Por favor, selecciona el producto exacto de abajo:",
                             reply_markup=kb,
                             parse_mode="Markdown"
                         )
@@ -2960,13 +3508,13 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                             
                     kb = InlineKeyboardMarkup([
                         [
-                            InlineKeyboardButton("📷 Escanear de Nuevo", callback_data="coti_build_search_barcode"),
+                            InlineKeyboardButton("📸 Intentar de Nuevo", callback_data="coti_build_search_barcode" if mode == "search_barcode" else "coti_build_search_ocr"),
                             InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")
                         ]
                     ])
                     prompt = await msg.reply_text(
-                        f"✅ *Código Escaneado:* `{barcode_val}`\n\n"
-                        f"❌ El producto con este código de barras no se encuentra registrado en el inventario Excel.\n\n"
+                        f"🔍 *Búsqueda:* \"{html.escape(query_val)}\"\n\n"
+                        f"❌ El producto con este código o texto no se encuentra registrado en el inventario Excel.\n\n"
                         f"¿Deseas intentar con otra imagen?",
                         reply_markup=kb,
                         parse_mode="Markdown"
@@ -2991,20 +3539,119 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                         
                 kb = InlineKeyboardMarkup([
                     [
-                        InlineKeyboardButton("📷 Escanear de Nuevo", callback_data="coti_build_search_barcode"),
+                        InlineKeyboardButton("📸 Intentar de Nuevo", callback_data="coti_build_search_barcode" if mode == "search_barcode" else "coti_build_search_ocr"),
                         InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")
                     ]
                 ])
                 prompt = await msg.reply_text(
-                    "❌ No se pudo identificar ningún código de barras en la imagen provista.\n\n"
+                    "❌ No se pudo identificar el producto o código en la imagen provista.\n\n"
                     "Por favor asegúrate de que la foto esté nítida y bien iluminada. ¿Deseas intentar de nuevo?",
                     reply_markup=kb,
                     parse_mode="Markdown"
                 )
                 pending_doc["prompt_message_id"] = prompt.message_id
         except Exception as e:
-            logger.error(f"Error procesando imagen para codigo de barras: {e}")
-            await msg.reply_text(f"⚠️ Ocurrió un error al procesar el código de barras por imagen: {e}")
+            logger.error(f"Error procesando imagen para busqueda de producto: {e}")
+            await msg.reply_text(f"⚠️ Ocurrió un error al procesar el producto por imagen: {e}")
+        finally:
+            try:
+                if tmp_path.exists():
+                    os.unlink(tmp_path)
+            except Exception:
+                pass
+        return
+
+    elif pending_doc:
+        photo = msg.photo[-1]
+        doc_type = pending_doc["type"]
+        status_msg = await msg.reply_text("📥 *Analizando documento con IA (Gemini OCR)...*", parse_mode="Markdown")
+        
+        suffix = ".jpg"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            
+        try:
+            tg_file = await context.bot.get_file(photo.file_id)
+            await tg_file.download_to_drive(tmp_path)
+            
+            from PIL import Image
+            from . import ocr_extract
+            import os
+            
+            img = Image.open(tmp_path)
+            extracted = ocr_extract.extract_document_data_from_image(img)
+            
+            # Mapear cliente y productos
+            client_info = {
+                "name": extracted.get("client_name") or "",
+                "rif": extracted.get("client_rif") or "",
+                "address": extracted.get("client_address") or "",
+                "phone": extracted.get("client_phone") or "",
+                "salesman": "FREDDY LOPEZ",
+                "saleType": "Contado",
+                "note": ""
+            }
+            if client_info["rif"]:
+                client_info["rif"] = _normalize_rif(client_info["rif"])
+
+            items = []
+            for it in extracted.get("items", []):
+                code = (it.get("code") or "").strip()
+                desc = (it.get("desc") or "").strip()
+                try:
+                    qty = float(it.get("qty") or 1.0)
+                except Exception:
+                    qty = 1.0
+                try:
+                    price = float(it.get("priceUsd") or 0.0)
+                except Exception:
+                    price = 0.0
+                items.append({
+                    "code": code,
+                    "desc": desc,
+                    "qty": qty,
+                    "priceUsd": price,
+                    "totalUsd": qty * price
+                })
+
+            if items:
+                pending_doc["parsed_data"] = {
+                    "docType": doc_type,
+                    "currency": "usd",
+                    "exchangeRate": get_current_bcv_rate(),
+                    "docNumber": "",
+                    "docDate": date.today().strftime("%Y-%m-%d"),
+                    "client": client_info,
+                    "items": items
+                }
+                
+                try:
+                    await msg.delete()
+                except Exception:
+                    pass
+                try:
+                    await status_msg.delete()
+                except Exception:
+                    pass
+                    
+                start_prompt_id = pending_doc.pop("start_prompt_message_id", None)
+                if start_prompt_id:
+                    try:
+                        await context.bot.delete_message(chat_id=msg.chat_id, message_id=start_prompt_id)
+                    except Exception:
+                        pass
+                
+                pending_doc["awaiting"] = "edit_card"
+                await _send_client_data_card(update, context, first_time=True)
+            else:
+                await status_msg.edit_text(
+                    "⚠️ *No pude identificar productos en el documento.*\n\n"
+                    "Por favor asegúrate de que la foto esté nítida y bien iluminada. ¿Deseas intentar de nuevo?",
+                    parse_mode="Markdown"
+                )
+        except Exception as e:
+            logger.error(f"Error procesando documento OCR en constructor: {e}")
+            await status_msg.edit_text(f"⚠️ Ocurrió un error al procesar el documento con OCR: {e}")
         finally:
             try:
                 if tmp_path.exists():
@@ -3342,8 +3989,9 @@ async def handle_ocr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
             
         try:
+            ctx = _get_company_context(update)
             inserted = excel_store.append_factura_compra(
-                config.FACTURAS_RECIBIDAS_PATH,
+                ctx.facturas_recibidas_path,
                 tipo_documento=pending["tipo_documento"],
                 fecha_emision=pending["fecha_emision"],
                 fecha_vencimiento=pending["fecha_vencimiento"],
@@ -3372,7 +4020,7 @@ async def handle_ocr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                     pass
                 return
                 
-            await msg.reply_text(f"✅ Factura Nro {pending['numero_documento']} registrada con éxito en {config.FACTURAS_RECIBIDAS_PATH.name}.")
+            await msg.reply_text(f"✅ Factura Nro {pending['numero_documento']} registrada con éxito en {ctx.facturas_recibidas_path.name}.")
             
             rate_val = Decimal(pending["islr_rate"])
             if rate_val > 0:
@@ -3381,10 +4029,10 @@ async def handle_ocr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                 islr_retenido_est = (base_val * rate_val).quantize(Decimal("0.01"))
                 
                 emission_date = tributario_engine._parse_row_date(pending["fecha_emision"]) or date.today()
-                num_comp = excel_store.next_retencion_islr_number(config.RETENCIONES_ISLR_DIR, emission_date=emission_date)
+                num_comp = excel_store.next_retencion_islr_number(ctx.retenciones_islr_dir, emission_date=emission_date)
                 periodo_fiscal = _periodo_fiscal(emission_date)
                 
-                monthly_path = excel_store.monthly_retencion_islr_path(config.RETENCIONES_ISLR_DIR, emission_date)
+                monthly_path = excel_store.monthly_retencion_islr_path(ctx.retenciones_islr_dir, emission_date)
                 excel_store.append_retencion_islr(
                     monthly_path,
                     numero_comprobante=num_comp,
@@ -3401,9 +4049,10 @@ async def handle_ocr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                     total_factura=total_val,
                 )
                 
-                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_pdf:
-                    pdf_path = Path(tmp_pdf.name)
-                    
+                ctx.generados_dir.mkdir(parents=True, exist_ok=True)
+                pdf_filename = f"COMPROBANTE_RETENCION_ISLR_{num_comp}.pdf"
+                pdf_path = ctx.generados_dir / pdf_filename
+                
                 try:
                     excel_store.export_comprobante_islr_pdf(
                         out_path=pdf_path,
@@ -3421,15 +4070,26 @@ async def handle_ocr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                         numero_control=pending["numero_control"],
                     )
                     
-                    pdf_filename = f"COMPROBANTE_RETENCION_ISLR_{num_comp}.pdf"
+                    # Registrar el documento generado en el historial
+                    _register_document_in_history(
+                        update=update,
+                        doc_type="retencion_islr",
+                        doc_number=num_comp,
+                        client_name=pending["proveedor"],
+                        client_rif=pending["proveedor_rif"],
+                        total_amount=f"Bs. {islr_retenido_est:,.2f}",
+                        temp_pdf_path=pdf_path
+                    )
+                    
+                    pdf_filename_disp = f"COMPROBANTE_RETENCION_ISLR_{num_comp}.pdf"
                     await msg.reply_document(
                         document=str(pdf_path),
-                        filename=pdf_filename,
+                        filename=pdf_filename_disp,
                         caption=f"📄 *Comprobante Oficial de Retención de ISLR Nro {num_comp}* generado con éxito para el proveedor {pending['proveedor']}.",
                         parse_mode="Markdown"
                     )
                 finally:
-                    pdf_path.unlink(missing_ok=True)
+                    pass
                     
         except Exception as e:
             logger.exception("Error al confirmar factura desde OCR")
@@ -3448,8 +4108,9 @@ async def handle_ocr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
             
         try:
+            ctx = _get_company_context(update)
             inserted = excel_store.append_record(
-                config.EXCEL_PATH,
+                ctx.excel_path,
                 fecha_emision=pending["fecha_emision"],
                 numero_comprobante=pending["numero_comprobante"],
                 rif=pending["rif"],
@@ -3465,7 +4126,7 @@ async def handle_ocr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             if not inserted:
                 await msg.reply_text(f"⚠️ La retención de IVA Nro {pending['numero_comprobante']} ya se encuentra registrada.")
             else:
-                await msg.reply_text(f"✅ Retención de IVA Nro {pending['numero_comprobante']} guardada con éxito en {config.EXCEL_PATH.name}.")
+                await msg.reply_text(f"✅ Retención de IVA Nro {pending['numero_comprobante']} guardada con éxito en {ctx.excel_path.name}.")
                 
         except Exception as e:
             logger.exception("Error al guardar retención IVA desde OCR")
@@ -3484,8 +4145,9 @@ async def handle_ocr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
             
         try:
+            ctx = _get_company_context(update)
             emission_date = tributario_engine._parse_row_date(pending["fecha_emision"]) or date.today()
-            monthly_path = excel_store.monthly_retencion_islr_path(config.RETENCIONES_ISLR_DIR, emission_date)
+            monthly_path = excel_store.monthly_retencion_islr_path(ctx.retenciones_islr_dir, emission_date)
             
             base_val = excel_store.parse_amount_ves_string(pending["base_imponible"]) or Decimal("0")
             rate_val = excel_store.parse_amount_ves_string(pending["porcentaje_retencion"]) or Decimal("0")
@@ -3572,8 +4234,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     is_channel = update.channel_post is not None or update.edited_channel_post is not None
 
-    # Procesar siempre publicaciones de canal y además chat SUFEVICA detectado.
-    if is_channel or _is_sufevica_chat(update):
+    pending_doc = context.user_data.get("pending_doc")
+    has_active_state = (
+        pending_doc is not None or
+        context.user_data.get("awaiting_company_name") is not None or
+        context.user_data.get("awaiting_company_rif") is not None or
+        context.user_data.get("awaiting_company_email") is not None or
+        context.user_data.get("awaiting_company_phone") is not None or
+        context.user_data.get("awaiting_company_address") is not None or
+        context.user_data.get("awaiting_company_signature") is not None or
+        context.user_data.get("awaiting_emit_docs") is not None or
+        context.user_data.get("admin_state") is not None or
+        context.user_data.get("share_doc") is not None
+    )
+
+    # Procesar siempre publicaciones de canal y además chat SUFEVICA detectado, si no hay un flujo activo.
+    if (is_channel or _is_sufevica_chat(update)) and not has_active_state:
         logger.info("Procesando texto de canal/chat detectado (chat_id=%s).", msg.chat_id)
         await _process_intent(update, context, text)
         return
@@ -3584,6 +4260,74 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     context.user_data.setdefault("voice_mode", False)
+    
+    ctx = _get_company_context(update)
+    if ctx.is_custom and ctx.company_type == "Ordinario":
+        normalized_text = text.lower()
+        if "generar retencion" in normalized_text or "generar retención" in normalized_text or "emitir retencion" in normalized_text or "emitir retención" in normalized_text or text == SUBMENU_GENERAR_RETENCION:
+            await msg.reply_text("⚠️ Opción Bloqueada: Los Contribuyentes Ordinarios no emiten comprobantes de retención de acuerdo con las normativas del SENIAT.")
+            return
+
+    # Interceptar entradas de texto del usuario para configuración de empresa (FlashTax)
+    user_id = update.effective_user.id
+    if context.user_data.get("awaiting_company_name"):
+        context.user_data.pop("awaiting_company_name", None)
+        new_name = text.strip()
+        user_manager.update_user_field(user_id, "company_name", new_name)
+        await msg.reply_text(f"✅ Razón Social actualizada a: *{new_name}*", parse_mode="Markdown")
+        await _show_company_config_menu(update, context)
+        return
+
+    elif context.user_data.get("awaiting_company_rif"):
+        new_rif = text.strip().upper()
+        # Validar RIF
+        if not tributario_engine.validar_rif_venezolano(new_rif):
+            await msg.reply_text(
+                "❌ *RIF Inválido*\n\n"
+                "El RIF ingresado no es válido de acuerdo a las especificaciones del SENIAT (ej: `J-40194130-3`).\n"
+                "Por favor, verifícalo e ingresa un RIF correcto:",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data="cfg_company_back")]])
+            )
+            return
+        context.user_data.pop("awaiting_company_rif", None)
+        user_manager.update_user_field(user_id, "company_rif", new_rif)
+        await msg.reply_text(f"✅ RIF de la empresa actualizado a: `{new_rif}`", parse_mode="Markdown")
+        await _show_company_config_menu(update, context)
+        return
+
+    elif context.user_data.get("awaiting_company_email"):
+        new_email = text.strip()
+        email_regex = r"^[\w\.-]+@[\w\.-]+\.\w+$"
+        if not re.match(email_regex, new_email):
+            await msg.reply_text(
+                "❌ *Correo Electrónico Inválido*\n\n"
+                "Por favor, ingresa una dirección de correo válida para el contador o presiona cancelar:",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data="cfg_company_back")]])
+            )
+            return
+        context.user_data.pop("awaiting_company_email", None)
+        user_manager.update_user_field(user_id, "company_email", new_email)
+        await msg.reply_text(f"✅ Correo del contador actualizado a: `{new_email}`", parse_mode="Markdown")
+        await _show_company_config_menu(update, context)
+        return
+
+    elif context.user_data.get("awaiting_company_phone"):
+        new_phone = text.strip()
+        context.user_data.pop("awaiting_company_phone", None)
+        user_manager.update_user_field(user_id, "company_phone", new_phone)
+        await msg.reply_text(f"✅ Teléfono de contacto actualizado a: `{new_phone}`", parse_mode="Markdown")
+        await _show_company_config_menu(update, context)
+        return
+
+    elif context.user_data.get("awaiting_company_address"):
+        new_address = text.strip()
+        context.user_data.pop("awaiting_company_address", None)
+        user_manager.update_user_field(user_id, "company_address", new_address)
+        await msg.reply_text(f"✅ Dirección fiscal actualizada a:\n_{new_address}_", parse_mode="Markdown")
+        await _show_company_config_menu(update, context)
+        return
     
     # Limpiar flujos/estados si es navegación de menús
     if text in {
@@ -3662,10 +4406,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if not _check_permission(update, "tributos"):
             await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
             return
+        context.user_data["active_menu"] = "tributos"
         await msg.reply_text(
             "🏛️ *Módulo de Tributos y Control Fiscal*\n\n"
             "Selecciona una de las opciones de abajo:",
-            reply_markup=_tributos_submenu_keyboard(),
+            reply_markup=_tributos_submenu_keyboard(update.effective_user.id),
             parse_mode="Markdown"
         )
         return
@@ -3674,6 +4419,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if not _check_permission(update, "cotizaciones"):
             await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Cotizaciones.")
             return
+        context.user_data["active_menu"] = "cotizacion"
         await _start_document_flow(update, context, "cotizacion")
         return
 
@@ -3681,7 +4427,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if not _check_permission(update, "cotizaciones"):
             await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Notas de Entrega.")
             return
+        context.user_data["active_menu"] = "nota"
         await _start_document_flow(update, context, "nota")
+        return
+
+    elif text == HISTORIAL_BUTTON:
+        context.user_data.pop("active_menu", None)
+        await _send_history_menu(update, context)
         return
 
     elif text == VOICE_BUTTON:
@@ -3701,6 +4453,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     elif text == SUBMENU_VOLVER:
+        context.user_data["active_menu"] = "main"
         await msg.reply_text(
             "🏛️ *Menú Principal*\n\n"
             "Selecciona una opción del menú para continuar:",
@@ -3716,7 +4469,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await msg.reply_text(
             "🏛️ *Módulo de Tributos y Control Fiscal*\n\n"
             "Selecciona una de las opciones de abajo:",
-            reply_markup=_tributos_submenu_keyboard(),
+            reply_markup=_tributos_submenu_keyboard(update.effective_user.id),
             parse_mode="Markdown"
         )
         return
@@ -3897,21 +4650,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 except Exception:
                     pass
                     
-            products = excel_store.search_products_in_excel(config.PRODUCTOS_PATH, text, search_by="code")
+            ctx = _get_company_context(update)
+            products = excel_store.search_products_in_excel(ctx.productos_path, text, search_by="code")
             
             if products:
                 if len(products) == 1:
                     product = products[0]
                     pending_doc["selected_product"] = product
                     pending_doc["awaiting"] = "input_qty"
+                    import html
+                    desc_esc = html.escape(product['description'])
+                    code_esc = html.escape(product['code'])
                     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")]])
                     prompt = await msg.reply_text(
-                        f"🔢 *CANTIDAD DE PRODUCTO*\n\n"
-                        f"Has seleccionado: *{product['description']}* (`{product['code']}`)\n"
-                        f"Precio Unitario: *${product['price']:.2f}*\n\n"
-                        f"Por favor, escribe la *cantidad* a cotizar / usar para este producto:",
+                        f"🔢 <b>CANTIDAD DE PRODUCTO</b>\n\n"
+                        f"Has seleccionado: <b>{desc_esc}</b> (<code>{code_esc}</code>)\n"
+                        f"Precio Unitario: <b>${product['price']:.2f}</b>\n\n"
+                        f"Por favor, escribe la <b>cantidad</b> a cotizar / usar para este producto:",
                         reply_markup=kb,
-                        parse_mode="Markdown"
+                        parse_mode="HTML"
                     )
                     pending_doc["prompt_message_id"] = prompt.message_id
                 else:
@@ -3962,7 +4719,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 except Exception:
                     pass
                     
-            products = excel_store.search_products_in_excel(config.PRODUCTOS_PATH, text, search_by="desc")
+            ctx = _get_company_context(update)
+            products = excel_store.search_products_in_excel(ctx.productos_path, text, search_by="desc")
             
             if products:
                 pending_doc["awaiting"] = "select_product"
@@ -4051,10 +4809,115 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await _send_interactive_builder_card(update, context, first_time=False)
             return
 
+        elif state == "edit_item_qty":
+            idx = pending_doc.get("edit_item_idx")
+            doc_data = pending_doc["parsed_data"]
+            items = doc_data["items"]
+            
+            try:
+                qty_val = float(text.replace(",", "."))
+                if qty_val <= 0:
+                    raise ValueError()
+            except ValueError:
+                await msg.reply_text("⚠️ Por favor ingresa una cantidad válida mayor a cero (ej. 10 o 5.5).")
+                return
+                
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+                
+            prompt_id = pending_doc.pop("prompt_message_id", None)
+            if prompt_id:
+                try:
+                    await context.bot.delete_message(chat_id=msg.chat_id, message_id=prompt_id)
+                except Exception:
+                    pass
+            
+            if idx is not None and 0 <= idx < len(items):
+                items[idx]["qty"] = qty_val
+                items[idx]["totalUsd"] = qty_val * float(items[idx]["priceUsd"])
+                
+            pending_doc["awaiting"] = "builder_main"
+            await _send_builder_items_editor(update, context)
+            return
+
+        elif state == "edit_item_price":
+            idx = pending_doc.get("edit_item_idx")
+            doc_data = pending_doc["parsed_data"]
+            items = doc_data["items"]
+            
+            try:
+                price_val = float(text.replace(",", "."))
+                if price_val <= 0:
+                    raise ValueError()
+            except ValueError:
+                await msg.reply_text("⚠️ Por favor ingresa un precio válido mayor a cero (ej. 15.50).")
+                return
+                
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+                
+            prompt_id = pending_doc.pop("prompt_message_id", None)
+            if prompt_id:
+                try:
+                    await context.bot.delete_message(chat_id=msg.chat_id, message_id=prompt_id)
+                except Exception:
+                    pass
+            
+            if idx is not None and 0 <= idx < len(items):
+                items[idx]["priceUsd"] = price_val
+                items[idx]["totalUsd"] = float(items[idx]["qty"]) * price_val
+                
+            pending_doc["awaiting"] = "builder_main"
+            await _send_builder_items_editor(update, context)
+            return
+
         if state == "text_data":
             doc_type = pending_doc["type"]
             doc_data = _parse_document_text_explicit(text, doc_type)
+
+            # Fallback a Gemini si falla el parser local de expresiones regulares
+            if doc_data is None and config.GEMINI_API_KEY:
+                try:
+                    from . import ocr_extract
+                    extracted = ocr_extract.parse_document_text_with_gemini(text)
+                    if extracted and extracted.get("items"):
+                        client_info = {
+                            "name": extracted.get("client_name") or "",
+                            "rif": extracted.get("client_rif") or "",
+                            "address": extracted.get("client_address") or "",
+                            "phone": extracted.get("client_phone") or "",
+                            "salesman": "FREDDY LOPEZ",
+                            "saleType": "Contado",
+                            "note": ""
+                        }
+                        if client_info["rif"]:
+                            client_info["rif"] = _normalize_rif(client_info["rif"])
+
+                        doc_data = {
+                            "docType": doc_type,
+                            "currency": "usd",
+                            "exchangeRate": get_current_bcv_rate(),
+                            "docNumber": "",
+                            "docDate": date.today().strftime("%Y-%m-%d"),
+                            "client": client_info,
+                            "items": extracted.get("items")
+                        }
+                except Exception as e:
+                    logger.error(f"Error en fallback Gemini para texto: {e}")
+
             if doc_data is not None:
+                # Formatear items crudos sin cruzar con inventario
+                for it in doc_data["items"]:
+                    it["qty"] = float(it.get("qty") or 1.0)
+                    it["priceUsd"] = float(it.get("priceUsd") or 0.0)
+                    it["totalUsd"] = it["qty"] * it["priceUsd"]
+                    it["code"] = (it.get("code") or "").strip()
+                    it["desc"] = (it.get("desc") or "").strip()
+
                 # Eliminar el mensaje de prompt inicial
                 start_prompt_id = pending_doc.pop("start_prompt_message_id", None)
                 if start_prompt_id:
@@ -4062,13 +4925,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                         await context.bot.delete_message(chat_id=msg.chat_id, message_id=start_prompt_id)
                     except Exception:
                         pass
-                
+
                 # Eliminar el mensaje del usuario con el texto pegado
                 try:
                     await msg.delete()
                 except Exception:
                     pass
-                
+
                 pending_doc["parsed_data"] = doc_data
                 pending_doc["awaiting"] = "edit_card"
                 await _send_client_data_card(update, context, first_time=True)
@@ -4229,11 +5092,12 @@ async def _send_reportes_async_workflow(
     from .email_sender import send_report_email
     import tempfile
     
+    ctx = _get_company_context(update)
     start_date, end_date = get_fortnight_range(year, month, fortnight)
     
     # 1. Generar datos y reportes quincenales
     records = excel_store.retenciones_by_document_date(
-        config.EXCEL_PATH,
+        ctx.excel_path,
         date_from=start_date,
         date_to=end_date,
     )
@@ -4274,7 +5138,11 @@ async def _send_reportes_async_workflow(
             headers=ret_headers,
             rows=ret_rows,
             numeric_cols=[6, 7],
-            sum_cols=[6, 7]
+            sum_cols=[6, 7],
+            emisor_nombre=ctx.company_name,
+            emisor_rif=ctx.company_rif,
+            emisor_telefono=ctx.company_phone or "No definido",
+            emisor_direccion=ctx.company_address or "No definida"
         )
         prof_xls = xls_path.with_name(f"RETENCIONES-RECIBIDAS-Q{fortnight}-{month}-{year}.xlsx")
         xls_path.rename(prof_xls)
@@ -4283,7 +5151,7 @@ async def _send_reportes_async_workflow(
         
         # 2. Excel de Facturas Recibidas / Compras con Retención Emitida
         purchases_rows = excel_store.load_purchases_by_date_range(
-            config.RETENCIONES_EMITIDAS_DIR,
+            ctx.retenciones_emitidas_dir,
             date_from=start_date,
             date_to=end_date
         )
@@ -4297,7 +5165,11 @@ async def _send_reportes_async_workflow(
             headers=["#", "Fecha", "Correlativo", "Proveedor", "RIF", "Nro Factura", "Nro Control", "Base (Bs)", "IVA (Bs)", "Monto (Bs)", "Retención (Bs)"],
             rows=purchases_rows,
             numeric_cols=[7, 8, 9, 10],
-            sum_cols=[7, 8, 9, 10]
+            sum_cols=[7, 8, 9, 10],
+            emisor_nombre=ctx.company_name,
+            emisor_rif=ctx.company_rif,
+            emisor_telefono=ctx.company_phone or "No definido",
+            emisor_direccion=ctx.company_address or "No definida"
         )
         prof_purchases_xls = purchases_xls_path.with_name(f"FACTURAS-RECIBIDAS-Q{fortnight}-{month}-{year}.xlsx")
         purchases_xls_path.rename(prof_purchases_xls)
@@ -4306,7 +5178,7 @@ async def _send_reportes_async_workflow(
 
         # 3. Excel de Facturas Emitidas / Ventas
         sales_rows = excel_store.load_sales_by_date_range(
-            config.FACTURAS_EMITIDAS_PATH,
+            ctx.facturas_emitidas_path,
             date_from=start_date,
             date_to=end_date
         )
@@ -4320,7 +5192,11 @@ async def _send_reportes_async_workflow(
             headers=["#", "Fecha", "Nro Factura", "Cliente", "RIF", "Base (Bs)", "IVA (Bs)", "Monto (Bs)"],
             rows=sales_rows,
             numeric_cols=[5, 6, 7],
-            sum_cols=[5, 6, 7]
+            sum_cols=[5, 6, 7],
+            emisor_nombre=ctx.company_name,
+            emisor_rif=ctx.company_rif,
+            emisor_telefono=ctx.company_phone or "No definido",
+            emisor_direccion=ctx.company_address or "No definida"
         )
         prof_sales_xls = sales_xls_path.with_name(f"FACTURAS-EMITIDAS-Q{fortnight}-{month}-{year}.xlsx")
         sales_xls_path.rename(prof_sales_xls)
@@ -4329,7 +5205,7 @@ async def _send_reportes_async_workflow(
 
         # 4. Excel de Reportes Z / Ventas Diarias
         z_rows = excel_store.load_reportes_z_by_date_range(
-            config.REPORTES_Z_PATH,
+            ctx.reportes_z_path,
             date_from=start_date,
             date_to=end_date
         )
@@ -4343,7 +5219,11 @@ async def _send_reportes_async_workflow(
             headers=["#", "Fecha", "Nro Reporte Z", "Subtotal (Bs)", "Exento (Bs)", "Base (Bs)", "IVA (Bs)", "Total (Bs)"],
             rows=z_rows,
             numeric_cols=[3, 4, 5, 6, 7],
-            sum_cols=[3, 4, 5, 6, 7]
+            sum_cols=[3, 4, 5, 6, 7],
+            emisor_nombre=ctx.company_name,
+            emisor_rif=ctx.company_rif,
+            emisor_telefono=ctx.company_phone or "No definido",
+            emisor_direccion=ctx.company_address or "No definida"
         )
         prof_z_xls = z_xls_path.with_name(f"REPORTES-Z-Q{fortnight}-{month}-{year}.xlsx")
         z_xls_path.rename(prof_z_xls)
@@ -4351,20 +5231,27 @@ async def _send_reportes_async_workflow(
         temp_files.append(prof_z_xls)
             
         # 2. Generar cuerpo del correo
-        report = get_compromiso_tributario_report(year, month, fortnight)
+        report = get_compromiso_tributario_report(
+            year, month, fortnight,
+            facturas_emitidas_path=ctx.facturas_emitidas_path,
+            reportes_z_path=ctx.reportes_z_path,
+            retenciones_emitidas_dir=ctx.retenciones_emitidas_dir,
+            excel_path=ctx.excel_path,
+            retenciones_islr_dir=ctx.retenciones_islr_dir
+        )
         report_text = format_tributos_report(report)
         
-        subject = f"Reporte Tributario Quincenal SUFEVICA - Q{fortnight} {month}/{year}"
+        subject = f"Reporte Tributario Quincenal {ctx.company_name} - Q{fortnight} {month}/{year}"
         
         body = (
             f"Estimado destinatario,\n\n"
             f"Se adjuntan los reportes financieros y las planillas fiscales de la empresa "
-            f"SUMINISTROS FERRETEROS VITTORIA (SUFEVICA), C.A. para la quincena evaluada:\n\n"
+            f"{ctx.company_name} para la quincena evaluada:\n\n"
             f"--------------------------------------------------\n"
             f"{report_text}\n"
             f"--------------------------------------------------\n\n"
             f"Atentamente,\n"
-            f"Bot Financiero Automatizado (SUFEVICA)"
+            f"Bot Financiero Automatizado ({ctx.company_name})"
         )
         
         # 3. Despachar el correo electrónico en segundo plano de forma no bloqueante
@@ -4411,6 +5298,7 @@ async def _send_reportes_telegram_async(
     from .tributario_engine import get_fortnight_range
     import tempfile
     
+    ctx = _get_company_context(update)
     logger.info("Iniciando _send_reportes_telegram_async para %d/%d Q%d", year, month, fortnight)
     temp_files: list[Path] = []
     attachments: list[tuple[Path, str]] = []
@@ -4420,7 +5308,7 @@ async def _send_reportes_telegram_async(
         
         # 1. Generar datos y reportes quincenales
         records = excel_store.retenciones_by_document_date(
-            config.EXCEL_PATH,
+            ctx.excel_path,
             date_from=start_date,
             date_to=end_date,
         )
@@ -4455,13 +5343,17 @@ async def _send_reportes_telegram_async(
             headers=ret_headers,
             rows=ret_rows,
             numeric_cols=[6, 7],
-            sum_cols=[6, 7]
+            sum_cols=[6, 7],
+            emisor_nombre=ctx.company_name,
+            emisor_rif=ctx.company_rif,
+            emisor_telefono=ctx.company_phone or "No definido",
+            emisor_direccion=ctx.company_address or "No definida"
         )
         attachments.append((xls_path, f"RETENCIONES-RECIBIDAS-Q{fortnight}-{month}-{year}.xlsx"))
         
         # 2. Excel de Facturas Recibidas / Compras con Retención Emitida
         purchases_rows = excel_store.load_purchases_by_date_range(
-            config.RETENCIONES_EMITIDAS_DIR,
+            ctx.retenciones_emitidas_dir,
             date_from=start_date,
             date_to=end_date
         )
@@ -4475,13 +5367,17 @@ async def _send_reportes_telegram_async(
             headers=["#", "Fecha", "Correlativo", "Proveedor", "RIF", "Nro Factura", "Nro Control", "Base (Bs)", "IVA (Bs)", "Monto (Bs)", "Retención (Bs)"],
             rows=purchases_rows,
             numeric_cols=[7, 8, 9, 10],
-            sum_cols=[7, 8, 9, 10]
+            sum_cols=[7, 8, 9, 10],
+            emisor_nombre=ctx.company_name,
+            emisor_rif=ctx.company_rif,
+            emisor_telefono=ctx.company_phone or "No definido",
+            emisor_direccion=ctx.company_address or "No definida"
         )
         attachments.append((purchases_xls_path, f"FACTURAS-RECIBIDAS-Q{fortnight}-{month}-{year}.xlsx"))
 
         # 3. Excel de Facturas Emitidas / Ventas
         sales_rows = excel_store.load_sales_by_date_range(
-            config.FACTURAS_EMITIDAS_PATH,
+            ctx.facturas_emitidas_path,
             date_from=start_date,
             date_to=end_date
         )
@@ -4495,13 +5391,17 @@ async def _send_reportes_telegram_async(
             headers=["#", "Fecha", "Nro Factura", "Cliente", "RIF", "Base (Bs)", "IVA (Bs)", "Monto (Bs)"],
             rows=sales_rows,
             numeric_cols=[5, 6, 7],
-            sum_cols=[5, 6, 7]
+            sum_cols=[5, 6, 7],
+            emisor_nombre=ctx.company_name,
+            emisor_rif=ctx.company_rif,
+            emisor_telefono=ctx.company_phone or "No definido",
+            emisor_direccion=ctx.company_address or "No definida"
         )
         attachments.append((sales_xls_path, f"FACTURAS-EMITIDAS-Q{fortnight}-{month}-{year}.xlsx"))
 
         # 4. Excel de Reportes Z / Ventas Diarias
         z_rows = excel_store.load_reportes_z_by_date_range(
-            config.REPORTES_Z_PATH,
+            ctx.reportes_z_path,
             date_from=start_date,
             date_to=end_date
         )
@@ -4515,7 +5415,11 @@ async def _send_reportes_telegram_async(
             headers=["#", "Fecha", "Nro Reporte Z", "Subtotal (Bs)", "Exento (Bs)", "Base (Bs)", "IVA (Bs)", "Total (Bs)"],
             rows=z_rows,
             numeric_cols=[3, 4, 5, 6, 7],
-            sum_cols=[3, 4, 5, 6, 7]
+            sum_cols=[3, 4, 5, 6, 7],
+            emisor_nombre=ctx.company_name,
+            emisor_rif=ctx.company_rif,
+            emisor_telefono=ctx.company_phone or "No definido",
+            emisor_direccion=ctx.company_address or "No definida"
         )
         attachments.append((z_xls_path, f"REPORTES-Z-Q{fortnight}-{month}-{year}.xlsx"))
             
@@ -4524,7 +5428,7 @@ async def _send_reportes_telegram_async(
             logger.info("Enviando documento %s a Telegram...", filename)
             with open(path, "rb") as f:
                 await context.bot.send_document(
-                    chat_id=config.ALLOWED_USER_ID,
+                    chat_id=update.effective_message.chat_id,
                     document=f,
                     filename=filename,
                     caption=f"📊 Reporte: {filename}"
@@ -4564,12 +5468,19 @@ async def _send_seniat_txt_telegram_async(
 ) -> None:
     import tempfile
     
+    ctx = _get_company_context(update)
     logger.info("Iniciando _send_seniat_txt_telegram_async para %d/%d Q%d", year, month, fortnight)
     temp_files: list[Path] = []
     
     try:
         # 1. Generar contenido TXT usando tributario_engine
-        emitidas_txt, recibidas_txt = tributario_engine.generate_seniat_txt_data(year, month, fortnight)
+        emitidas_txt, recibidas_txt = tributario_engine.generate_seniat_txt_data(
+            year, month, fortnight,
+            retenciones_emitidas_dir=ctx.retenciones_emitidas_dir,
+            facturas_recibidas_path=ctx.facturas_recibidas_path,
+            excel_path=ctx.excel_path,
+            emitter_rif=ctx.company_rif
+        )
         
         # 2. Crear archivos temporales
         # Retenciones Emitidas
@@ -4590,7 +5501,7 @@ async def _send_seniat_txt_telegram_async(
             logger.info("Enviando TXT de emitidas a Telegram...")
             with open(emit_path, "rb") as f:
                 await context.bot.send_document(
-                    chat_id=config.ALLOWED_USER_ID,
+                    chat_id=update.effective_message.chat_id,
                     document=f,
                     filename=emit_filename,
                     caption=f"📝 TXT Retenciones Emitidas (Compras) - Q{fortnight} {month:02d}/{year}"
@@ -4601,7 +5512,7 @@ async def _send_seniat_txt_telegram_async(
             logger.info("Enviando TXT de recibidas a Telegram...")
             with open(recib_path, "rb") as f:
                 await context.bot.send_document(
-                    chat_id=config.ALLOWED_USER_ID,
+                    chat_id=update.effective_message.chat_id,
                     document=f,
                     filename=recib_filename,
                     caption=f"📝 TXT Retenciones Recibidas (Ventas) - Q{fortnight} {month:02d}/{year}"
@@ -4822,12 +5733,13 @@ def _months_selection_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
-def _format_iva_details(year: int, month: int, fortnight: int) -> str:
+def _format_iva_details(year: int, month: int, fortnight: int, user_id: int | str | None = None) -> str:
+    ctx = CompanyContext(user_id)
     start_date, end_date = tributario_engine.get_fortnight_range(year, month, fortnight)
     from .tributario_engine import _parse_row_date
     
     compras_details = []
-    path_c = config.FACTURAS_RECIBIDAS_PATH
+    path_c = ctx.facturas_recibidas_path
     if path_c.exists():
         try:
             wb = load_workbook(path_c, read_only=True, data_only=True)
@@ -4847,7 +5759,7 @@ def _format_iva_details(year: int, month: int, fortnight: int) -> str:
             compras_details.append(f"Error cargando compras: {e}")
             
     ventas_details = []
-    for path_v in [config.FACTURAS_EMITIDAS_PATH, config.REPORTES_Z_PATH]:
+    for path_v in [ctx.facturas_emitidas_path, ctx.reportes_z_path]:
         if not path_v.exists():
             continue
         try:
@@ -4870,7 +5782,7 @@ def _format_iva_details(year: int, month: int, fortnight: int) -> str:
             ventas_details.append(f"Error cargando ventas: {e}")
             
     ret_details = []
-    path_r = config.EXCEL_PATH
+    path_r = ctx.excel_path
     if path_r.exists():
         try:
             wb = load_workbook(path_r, read_only=True, data_only=True)
@@ -4910,6 +5822,174 @@ def _format_iva_details(year: int, month: int, fortnight: int) -> str:
         text += "No hay retenciones de clientes en este período.\n"
         
     return text
+
+
+def _format_islr_details(year: int, month: int, fortnight: int, user_id: int | str | None = None) -> str:
+    ctx = CompanyContext(user_id)
+    start_date, end_date = tributario_engine.get_fortnight_range(year, month, fortnight)
+    from .tributario_engine import _parse_row_date
+    
+    islr_details = []
+    path_dir = ctx.retenciones_islr_dir
+    # Buscar archivos de Excel en el directorio de retenciones de ISLR
+    if path_dir.exists():
+        try:
+            for path_r in path_dir.glob("*.xlsx"):
+                wb = load_workbook(path_r, read_only=True, data_only=True)
+                ws = wb.active
+                headers = excel_store._headers_index(ws)
+                for row in ws.iter_rows(min_row=2, values_only=True):
+                    if not row:
+                        continue
+                    f_emi = _parse_row_date(excel_store._cell(row, headers, "Fecha_emision", None) or excel_store._cell(row, headers, "Fecha", None))
+                    if f_emi and start_date <= f_emi <= end_date:
+                        comp = str(excel_store._cell(row, headers, "Numero_comprobante", None) or excel_store._cell(row, headers, "Comprobante", "-"))[:12]
+                        prov = str(excel_store._cell(row, headers, "Proveedor", None) or excel_store._cell(row, headers, "Razon_social", "-"))[:15]
+                        rif = str(excel_store._cell(row, headers, "Proveedor_RIF", None) or excel_store._cell(row, headers, "RIF", "-"))
+                        monto_ret = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Monto_ISLR_retenido", None) or excel_store._cell(row, headers, "ISLR_retenido", None)) or Decimal("0")
+                        islr_details.append(f"• {f_emi.strftime('%d/%m')} [Comp {comp}]: {prov} ({rif}) | Ret: {excel_store._format_monto_ves(monto_ret)} Bs")
+                wb.close()
+        except Exception as e:
+            islr_details.append(f"Error cargando ISLR: {e}")
+            
+    text = f"📊 *DETALLE ISLR QUINCENAL* ({start_date.strftime('%d/%m/%Y')} - {end_date.strftime('%d/%m/%Y')})\n\n"
+    text += "*💸 retenciones de ISLR emitidas:*\n"
+    if islr_details:
+        text += "\n".join(islr_details) + "\n"
+    else:
+        text += "No hay retenciones de ISLR registradas en este período.\n"
+        
+    return text
+
+
+async def _show_company_config_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, msg_to_edit=None) -> None:
+    ctx = _get_company_context(update)
+    if not ctx.is_custom:
+        await update.effective_message.reply_text("❌ Esta opción solo está disponible para usuarios con privilegios de Empresa (FlashTax).")
+        return
+
+    firma_personalizada = (ctx.dir_path / "firma_sello_transparente.png").exists()
+    firma_status = "✅ Personalizada" if firma_personalizada else "❌ Por defecto (SUFEVICA)"
+
+    text = (
+        f"🏢 *Configuración de la Empresa (FlashTax)*\n\n"
+        f"• *Razón Social:* {ctx.company_name}\n"
+        f"• *RIF:* `{ctx.company_rif}`\n"
+        f"• *Tipo de Contribuyente:* {ctx.company_type}\n"
+        f"• *Correo del Contador:* `{ctx.company_email or 'no definido'}`\n"
+        f"• *Teléfono:* `{ctx.company_phone or 'no definido'}`\n"
+        f"• *Dirección:* `{ctx.company_address or 'no definida'}`\n"
+        f"• *Firma y Sello:* {firma_status}\n\n"
+        f"Seleccione el campo que desea modificar usando los botones de abajo:"
+    )
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📝 Modificar Razón Social", callback_data="cfg_company_name")],
+        [InlineKeyboardButton("🆔 Modificar RIF", callback_data="cfg_company_rif")],
+        [InlineKeyboardButton(f"🏛️ Contribuyente: {ctx.company_type}", callback_data="cfg_company_type")],
+        [InlineKeyboardButton("📧 Modificar Correo", callback_data="cfg_company_email")],
+        [InlineKeyboardButton("📞 Modificar Teléfono", callback_data="cfg_company_phone")],
+        [InlineKeyboardButton("📍 Modificar Dirección Fiscal", callback_data="cfg_company_address")],
+        [InlineKeyboardButton("✍️ Subir Firma y Sello", callback_data="cfg_company_signature")],
+        [InlineKeyboardButton("❌ Cerrar Configuración", callback_data="cfg_company_close")]
+    ])
+
+    if msg_to_edit:
+        await msg_to_edit.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    else:
+        await update.effective_message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+
+
+async def handle_cfg_company_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    if not q:
+        return
+    await q.answer()
+    data = q.data
+    msg = q.message
+    if not msg:
+        return
+    user_id = update.effective_user.id
+    
+    user = user_manager.get_user(user_id)
+    if not user or user.get("role") != "nueva_empresa":
+        await msg.reply_text("❌ No autorizado.")
+        return
+
+    context.user_data.pop("awaiting_company_name", None)
+    context.user_data.pop("awaiting_company_rif", None)
+    context.user_data.pop("awaiting_company_email", None)
+    context.user_data.pop("awaiting_company_phone", None)
+    context.user_data.pop("awaiting_company_address", None)
+    context.user_data.pop("awaiting_company_signature", None)
+
+    if data == "cfg_company_close":
+        await msg.delete()
+        await msg.reply_text(
+            "Configuración cerrada.",
+            reply_markup=_main_keyboard(user_id)
+        )
+        return
+
+    elif data == "cfg_company_type":
+        current_type = user.get("company_type", "Especial")
+        new_type = "Ordinario" if current_type == "Especial" else "Especial"
+        user_manager.update_user_field(user_id, "company_type", new_type)
+        await _show_company_config_menu(update, context, msg_to_edit=msg)
+        return
+
+    elif data == "cfg_company_name":
+        context.user_data["awaiting_company_name"] = True
+        await msg.edit_text(
+            "📝 *Modificar Razón Social*\n\nEscribe el nuevo nombre legal de tu empresa:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data="cfg_company_back")]])
+        )
+
+    elif data == "cfg_company_rif":
+        context.user_data["awaiting_company_rif"] = True
+        await msg.edit_text(
+            "🆔 *Modificar RIF*\n\nEscribe el RIF de tu empresa (debe ser válido según las normativas del SENIAT, ej: `J-40194130-3`):",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data="cfg_company_back")]])
+        )
+
+    elif data == "cfg_company_email":
+        context.user_data["awaiting_company_email"] = True
+        await msg.edit_text(
+            "📧 *Modificar Correo del Contador*\n\nEscribe la dirección de correo a la que deseas enviar reportes automáticos:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data="cfg_company_back")]])
+        )
+
+    elif data == "cfg_company_phone":
+        context.user_data["awaiting_company_phone"] = True
+        await msg.edit_text(
+            "📞 *Modificar Teléfono de Contacto*\n\nEscribe el teléfono que aparecerá impreso en tus documentos (cotizaciones/notas):",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data="cfg_company_back")]])
+        )
+
+    elif data == "cfg_company_address":
+        context.user_data["awaiting_company_address"] = True
+        await msg.edit_text(
+            "📍 *Modificar Dirección Fiscal*\n\nEscribe la dirección fiscal de tu empresa:",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data="cfg_company_back")]])
+        )
+
+    elif data == "cfg_company_signature":
+        context.user_data["awaiting_company_signature"] = True
+        await msg.edit_text(
+            "✍️ *Subir Firma y Sello*\n\n"
+            "Por favor, envía por chat la *imagen* (foto o archivo JPG/PNG) que contiene tu firma y sello.\n\n"
+            "Idealmente, utiliza una imagen con fondo transparente para que se vea profesional sobre tus PDF.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data="cfg_company_back")]])
+        )
+
+    elif data == "cfg_company_back":
+        await _show_company_config_menu(update, context, msg_to_edit=msg)
 
 
 
@@ -5065,6 +6145,7 @@ async def _start_document_flow(
     emoji = "📋" if doc_type == "cotizacion" else "📦"
     title_up = "COTIZACIÓN" if doc_type == "cotizacion" else "NOTA DE ENTREGA"
     
+    context.user_data["active_menu"] = doc_type
     context.user_data["pending_doc"] = {
         "type": doc_type,
         "awaiting": "text_data"
@@ -5077,9 +6158,8 @@ async def _start_document_flow(
     
     prompt = await msg.reply_text(
         f"{emoji} *NUEVA {title_up}* {emoji}\n\n"
-        f"Por favor, *pega o escribe aquí el texto con los datos* del cliente y los productos "
-        f"(puedes copiarlo directamente desde Excel, WhatsApp o cualquier factura).\n\n"
-        f"O presiona el botón de abajo para iniciar el *Constructor Interactivo* y seleccionar productos desde el Excel.",
+        f"Por favor, *pega o escribe el texto* con los datos del cliente y los productos, o *envía una foto/imagen de la orden/documento* (cotización, factura o nota de entrega) para extraerlos automáticamente usando OCR con IA.\n\n"
+        f"También puedes presionar el botón de abajo para iniciar el *Constructor Interactivo* y seleccionar productos directamente desde el inventario Excel.",
         reply_markup=kb,
         parse_mode="Markdown"
     )
@@ -5097,7 +6177,45 @@ async def _process_document_text_immediate(
         return
         
     doc_data = _parse_document_text_explicit(text_content, doc_type)
+    
+    # Fallback a Gemini si falla el parser local de expresiones regulares
+    if doc_data is None and config.GEMINI_API_KEY:
+        try:
+            from . import ocr_extract
+            extracted = ocr_extract.parse_document_text_with_gemini(text_content)
+            if extracted and extracted.get("items"):
+                client_info = {
+                    "name": extracted.get("client_name") or "",
+                    "rif": extracted.get("client_rif") or "",
+                    "address": extracted.get("client_address") or "",
+                    "phone": extracted.get("client_phone") or "",
+                    "salesman": "FREDDY LOPEZ",
+                    "saleType": "Contado",
+                    "note": ""
+                }
+                if client_info["rif"]:
+                    client_info["rif"] = _normalize_rif(client_info["rif"])
+
+                doc_data = {
+                    "docType": doc_type,
+                    "currency": "usd",
+                    "exchangeRate": get_current_bcv_rate(),
+                    "docNumber": "",
+                    "docDate": date.today().strftime("%Y-%m-%d"),
+                    "client": client_info,
+                    "items": extracted.get("items")
+                }
+        except Exception as e:
+            logger.error(f"Error en fallback Gemini para texto inmediato: {e}")
+
     if doc_data is not None:
+        # Formatear items crudos sin cruzar con inventario
+        for it in doc_data["items"]:
+            it["qty"] = float(it.get("qty") or 1.0)
+            it["priceUsd"] = float(it.get("priceUsd") or 0.0)
+            it["totalUsd"] = it["qty"] * it["priceUsd"]
+            it["code"] = (it.get("code") or "").strip()
+            it["desc"] = (it.get("desc") or "").strip()
         context.user_data["pending_doc"] = {
             "type": doc_type,
             "awaiting": "edit_card",
@@ -5375,7 +6493,8 @@ async def _send_interactive_builder_card(
             InlineKeyboardButton("🔎 Buscar por Descripción", callback_data="coti_build_search_desc")
         ],
         [
-            InlineKeyboardButton("📷 Escanear Código Barra", callback_data="coti_build_search_barcode")
+            InlineKeyboardButton("📷 Escanear Código Barra", callback_data="coti_build_search_barcode"),
+            InlineKeyboardButton("📸 Escanear Producto (OCR)", callback_data="coti_build_search_ocr")
         ],
         [
             InlineKeyboardButton("👤 Configurar Cliente", callback_data="coti_build_edit_client"),
@@ -5435,7 +6554,6 @@ async def _send_builder_items_editor(update: Update, context: ContextTypes.DEFAU
     pending_doc = context.user_data.get("pending_doc")
     if not pending_doc or "parsed_data" not in pending_doc:
         return
-    q = update.callback_query
     
     doc_data = pending_doc["parsed_data"]
     items = doc_data["items"]
@@ -5444,26 +6562,43 @@ async def _send_builder_items_editor(update: Update, context: ContextTypes.DEFAU
     symbol = "$" if currency == "usd" else "Bs."
     conv_rate = float(rate) if currency == "ves" else 1.0
     
-    text = "🛒 *PRODUCTOS AGREGADOS*\n\nSelecciona el botón de un producto para eliminarlo del documento:\n\n"
+    text = (
+        "🛒 *VISTA PREVIA DEL DOCUMENTO*\n\n"
+        "Aquí puedes ver la lista de productos agregados, sus cantidades y precios. "
+        "Usa los botones de cada fila para modificar o eliminar un ítem:\n\n"
+    )
     
+    total_val = 0.0
     kb_list = []
     for idx, it in enumerate(items):
         qty = float(it.get("qty", 1.0))
-        price = float(it.get("priceUsd", 0.0)) * conv_rate
-        subt = qty * price
+        price_unit = float(it.get("priceUsd", 0.0)) * conv_rate
+        subt = qty * price_unit
+        total_val += subt
+        
+        formatted_price = f"{price_unit:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         formatted_subt = f"{subt:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
         
-        btn_text = f"❌ {it.get('code')} (Cant: {qty}) = {symbol} {formatted_subt}"
-        kb_list.append([InlineKeyboardButton(btn_text, callback_data=f"coti_build_delete_item:{idx}")])
-        
         desc_short = it.get('desc', '')
-        if len(desc_short) > 25:
-            desc_short = desc_short[:22] + "..."
-        text += f"• *{it.get('code')}* - {desc_short} (Cant: {qty}) = {symbol} {formatted_subt}\n"
+        if len(desc_short) > 28:
+            desc_short = desc_short[:25] + "..."
+            
+        text += (
+            f"*{idx + 1}. {it.get('code')}* - {desc_short}\n"
+            f"   • Cant: *{qty}* | P.U.: *{symbol} {formatted_price}* | Sub: *{symbol} {formatted_subt}*\n\n"
+        )
+        
+        btn_cant = InlineKeyboardButton(f"{idx+1}. ✏️ Cant", callback_data=f"coti_build_edit_qty:{idx}")
+        btn_precio = InlineKeyboardButton(f"{idx+1}. ✏️ Precio", callback_data=f"coti_build_edit_price:{idx}")
+        btn_delete = InlineKeyboardButton(f"{idx+1}. ❌ Eliminar", callback_data=f"coti_build_delete_item:{idx}")
+        kb_list.append([btn_cant, btn_precio, btn_delete])
         
     if not items:
         text += "_[No hay productos agregados todavía]_\n"
         
+    formatted_total = f"{total_val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    text += f"----------------------------------\n💰 *TOTAL:* *{symbol} {formatted_total}*\n"
+    
     kb_list.append([
         InlineKeyboardButton("🧹 Vaciar Todo", callback_data="coti_build_clear_items"),
         InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")
@@ -5473,7 +6608,7 @@ async def _send_builder_items_editor(update: Update, context: ContextTypes.DEFAU
     chat_id = update.effective_chat.id if update.effective_chat else None
     menu_message_id = pending_doc.get("menu_message_id")
     
-    if q and menu_message_id and chat_id:
+    if menu_message_id and chat_id:
         try:
             await context.bot.edit_message_text(
                 chat_id=chat_id,
@@ -5482,21 +6617,16 @@ async def _send_builder_items_editor(update: Update, context: ContextTypes.DEFAU
                 reply_markup=kb,
                 parse_mode="Markdown"
             )
+            return
         except Exception:
-            sent_msg = await context.bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                reply_markup=kb,
-                parse_mode="Markdown"
-            )
-            pending_doc["menu_message_id"] = sent_msg.message_id
-    else:
-        sent_msg = await msg.reply_text(
-            text,
-            reply_markup=kb,
-            parse_mode="Markdown"
-        )
-        pending_doc["menu_message_id"] = sent_msg.message_id
+            pass
+            
+    sent_msg = await msg.reply_text(
+        text,
+        reply_markup=kb,
+        parse_mode="Markdown"
+    )
+    pending_doc["menu_message_id"] = sent_msg.message_id
 
 
 async def handle_builder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -5599,6 +6729,34 @@ async def handle_builder_callback(update: Update, context: ContextTypes.DEFAULT_
             parse_mode="Markdown"
         )
         pending_doc["prompt_message_id"] = prompt.message_id
+
+    elif data == "coti_build_search_ocr":
+        pending_doc["awaiting"] = "search_ocr"
+        try:
+            await q.delete_message()
+        except Exception:
+            pass
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")]])
+        prompt = await msg.reply_text(
+            "📸 *ESCANEAR PRODUCTO CON OCR*\n\nPor favor, *toma una foto* a la etiqueta, empaque o catálogo del producto y *envíamela* por aquí. Yo leeré el texto con Inteligencia Artificial para buscarlo en tu inventario:",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        pending_doc["prompt_message_id"] = prompt.message_id
+
+    elif data == "coti_build_search_ocr":
+        pending_doc["awaiting"] = "search_ocr"
+        try:
+            await q.delete_message()
+        except Exception:
+            pass
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")]])
+        prompt = await msg.reply_text(
+            "📸 *ESCANEAR PRODUCTO CON OCR*\n\nPor favor, *toma una foto* a la etiqueta, empaque o catálogo del producto y *envíamela* por aquí. Yo leeré el texto con Inteligencia Artificial para buscarlo en tu inventario:",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        pending_doc["prompt_message_id"] = prompt.message_id
         
     elif data == "coti_build_search_desc":
         pending_doc["awaiting"] = "search_desc"
@@ -5628,7 +6786,53 @@ async def handle_builder_callback(update: Update, context: ContextTypes.DEFAULT_
         await _send_client_data_card(update, context, first_time=True)
         
     elif data == "coti_build_view_items":
+        if pending_doc and pending_doc.get("awaiting") in ("edit_item_qty", "edit_item_price"):
+            pending_doc["awaiting"] = "builder_main"
         await _send_builder_items_editor(update, context)
+        
+    elif data.startswith("coti_build_edit_qty:"):
+        idx = int(data.split(":")[1])
+        items = doc_data["items"]
+        if 0 <= idx < len(items):
+            pending_doc["awaiting"] = "edit_item_qty"
+            pending_doc["edit_item_idx"] = idx
+            item = items[idx]
+            try:
+                await q.delete_message()
+            except Exception:
+                pass
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data="coti_build_view_items")]])
+            prompt = await msg.reply_text(
+                f"📝 *EDITAR CANTIDAD*\n\n"
+                f"Producto: *{item.get('desc')}* (`{item.get('code')}`)\n"
+                f"Cantidad actual: *{item.get('qty')}*\n\n"
+                f"Por favor, escribe la *nueva cantidad* (mayor a cero):",
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+            pending_doc["prompt_message_id"] = prompt.message_id
+            
+    elif data.startswith("coti_build_edit_price:"):
+        idx = int(data.split(":")[1])
+        items = doc_data["items"]
+        if 0 <= idx < len(items):
+            pending_doc["awaiting"] = "edit_item_price"
+            pending_doc["edit_item_idx"] = idx
+            item = items[idx]
+            try:
+                await q.delete_message()
+            except Exception:
+                pass
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data="coti_build_view_items")]])
+            prompt = await msg.reply_text(
+                f"📝 *EDITAR PRECIO UNITARIO*\n\n"
+                f"Producto: *{item.get('desc')}* (`{item.get('code')}`)\n"
+                f"Precio actual: *${float(item.get('priceUsd', 0.0)):,.2f}*\n\n"
+                f"Por favor, escribe el *nuevo precio unitario* en USD (mayor a cero):",
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+            pending_doc["prompt_message_id"] = prompt.message_id
         
     elif data == "coti_build_clear_items":
         doc_data["items"] = []
@@ -5650,7 +6854,8 @@ async def handle_builder_callback(update: Update, context: ContextTypes.DEFAULT_
                 
         if not product:
             # Fallback en caso de que no esté en la caché temporal (ej. reinicio)
-            products = excel_store.search_products_in_excel(config.PRODUCTOS_PATH, p_val, search_by="code")
+            ctx = _get_company_context(update)
+            products = excel_store.search_products_in_excel(ctx.productos_path, p_val, search_by="code")
             if products:
                 product = products[0]
                 for p in products:
@@ -5667,14 +6872,17 @@ async def handle_builder_callback(update: Update, context: ContextTypes.DEFAULT_
             except Exception:
                 pass
                 
+            import html
+            desc_esc = html.escape(product['description'])
+            code_esc = html.escape(product['code'])
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")]])
             prompt = await msg.reply_text(
-                f"🔢 *CANTIDAD DE PRODUCTO*\n\n"
-                f"Has seleccionado: *{product['description']}* (`{product['code']}`)\n"
-                f"Precio Unitario: *${product['price']:.2f}*\n\n"
-                f"Por favor, escribe la *cantidad* a cotizar / usar para este producto:",
+                f"🔢 <b>CANTIDAD DE PRODUCTO</b>\n\n"
+                f"Has seleccionado: <b>{desc_esc}</b> (<code>{code_esc}</code>)\n"
+                f"Precio Unitario: <b>${product['price']:.2f}</b>\n\n"
+                f"Por favor, escribe la <b>cantidad</b> a cotizar / usar para este producto:",
                 reply_markup=kb,
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
             pending_doc["prompt_message_id"] = prompt.message_id
         else:
@@ -5696,6 +6904,7 @@ async def handle_builder_callback(update: Update, context: ContextTypes.DEFAULT_
             
         await _generate_document_from_parsed_data(update, context, doc_data)
         context.user_data.pop("pending_doc", None)
+        context.user_data.pop("active_menu", None)
         
     elif data == "coti_build_cancel":
         doc_type = pending_doc.get("type", "documento")
@@ -5707,6 +6916,7 @@ async def handle_builder_callback(update: Update, context: ContextTypes.DEFAULT_
             pass
             
         context.user_data.pop("pending_doc", None)
+        context.user_data.pop("active_menu", None)
         await msg.reply_text(f"❌ Flujo de creación de *{title_up}* cancelado.", parse_mode="Markdown")
 
 
@@ -5800,7 +7010,15 @@ async def handle_tributos_callback(
         y = int(parts[2])
         m = int(parts[3])
         f = int(parts[4])
-        report = tributario_engine.get_compromiso_tributario_report(y, m, f)
+        ctx = _get_company_context(update)
+        report = tributario_engine.get_compromiso_tributario_report(
+            y, m, f,
+            facturas_emitidas_path=ctx.facturas_emitidas_path,
+            reportes_z_path=ctx.reportes_z_path,
+            retenciones_emitidas_dir=ctx.retenciones_emitidas_dir,
+            excel_path=ctx.excel_path,
+            retenciones_islr_dir=ctx.retenciones_islr_dir
+        )
         text = format_tributos_report(report)
         kb = _tributos_keyboard(y, m, f, _generate_short_summary(report))
         await msg.edit_text(text, reply_markup=kb, parse_mode="Markdown")
@@ -5810,7 +7028,7 @@ async def handle_tributos_callback(
         y = int(parts[2])
         m = int(parts[3])
         f = int(parts[4])
-        text = _format_iva_details(y, m, f)
+        text = _format_iva_details(y, m, f, update.effective_user.id)
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver al Reporte", callback_data=f"tributos_period_{y}_{m}_{f}")]])
         await msg.edit_text(text, reply_markup=kb, parse_mode="Markdown")
         
@@ -5819,7 +7037,7 @@ async def handle_tributos_callback(
         y = int(parts[2])
         m = int(parts[3])
         f = int(parts[4])
-        text = _format_islr_details(y, m, f)
+        text = _format_islr_details(y, m, f, update.effective_user.id)
         kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver al Reporte", callback_data=f"tributos_period_{y}_{m}_{f}")]])
         await msg.edit_text(text, reply_markup=kb, parse_mode="Markdown")
         
@@ -5961,6 +7179,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🏛️ Tributos Only", callback_data=f"admin_req_role:{target_uid}:{days}:tributos_only")],
                 [InlineKeyboardButton("📋 Cotizaciones Only", callback_data=f"admin_req_role:{target_uid}:{days}:cotizaciones_only")],
+                [InlineKeyboardButton("🏢 Nueva Empresa (FlashTax)", callback_data=f"admin_req_role:{target_uid}:{days}:nueva_empresa")],
                 [InlineKeyboardButton("⭐ Acceso Total", callback_data=f"admin_req_role:{target_uid}:{days}:full_access")],
                 [InlineKeyboardButton("🔙 Atrás", callback_data=f"admin_req_start:{target_uid}")]
             ])
@@ -5999,7 +7218,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 limit_ops=-1
             )
 
-            role_lbl = "Tributos Only" if role == "tributos_only" else ("Cotizaciones Only" if role == "cotizaciones_only" else "Acceso Total")
+            role_lbl = "Tributos Only" if role == "tributos_only" else ("Cotizaciones Only" if role == "cotizaciones_only" else "Nueva Empresa (FlashTax)" if role == "nueva_empresa" else "Acceso Total")
             plan_lbl = "Prueba (5 días)" if days == 5 else ("Plan Estándar (30 días)" if days == 30 else "Plan Premium (3 meses)")
 
             name_escaped = html.escape(name)
@@ -6293,7 +7512,8 @@ async def _generate_purchases_loaded_report(
     if not msg:
         return
         
-    path = config.FACTURAS_RECIBIDAS_PATH
+    ctx = _get_company_context(update)
+    path = ctx.facturas_recibidas_path
     if not path.exists():
         await status_msg.edit_text("⚠️ No hay facturas de compra registradas en el sistema.")
         return
@@ -6362,7 +7582,11 @@ async def _generate_purchases_loaded_report(
             headers=["#", "Fecha Emisión", "Nro Documento", "Proveedor", "RIF", "Subtotal", "Exento", "Base Imponible", "IVA", "Total"],
             rows=rows,
             numeric_cols=[5, 6, 7, 8, 9],
-            sum_cols=[5, 6, 7, 8, 9]
+            sum_cols=[5, 6, 7, 8, 9],
+            emisor_nombre=ctx.company_name,
+            emisor_rif=ctx.company_rif,
+            emisor_telefono=ctx.company_phone or "No definido",
+            emisor_direccion=ctx.company_address or "No definida"
         )
         
         renamed_xls = report_xls_path.with_name(f"COMPRAS-CARGADAS-{date_from.strftime('%d%m%Y')}-AL-{date_to.strftime('%d%m%Y')}.xlsx")
@@ -6400,7 +7624,8 @@ async def _generate_pending_withholdings_report(
     if not msg:
         return
         
-    path = config.FACTURAS_RECIBIDAS_PATH
+    ctx = _get_company_context(update)
+    path = ctx.facturas_recibidas_path
     if not path.exists():
         await status_msg.edit_text("⚠️ No hay facturas de compra registradas en el sistema.")
         return
@@ -6410,7 +7635,7 @@ async def _generate_pending_withholdings_report(
             return re.sub(r"\s+", "", str(v or "")).strip().upper()
             
         emitted_docs = set()
-        base_dir = config.RETENCIONES_EMITIDAS_DIR
+        base_dir = ctx.retenciones_emitidas_dir
         if base_dir.is_dir():
             for filepath in base_dir.glob("RETEN-EMIT-*.xlsx"):
                 try:
@@ -6498,7 +7723,11 @@ async def _generate_pending_withholdings_report(
             headers=["#", "Fecha Emisión", "Nro Documento", "Proveedor", "RIF", "Subtotal", "Exento", "Base Imponible", "IVA", "Total"],
             rows=rows,
             numeric_cols=[5, 6, 7, 8, 9],
-            sum_cols=[5, 6, 7, 8, 9]
+            sum_cols=[5, 6, 7, 8, 9],
+            emisor_nombre=ctx.company_name,
+            emisor_rif=ctx.company_rif,
+            emisor_telefono=ctx.company_phone or "No definido",
+            emisor_direccion=ctx.company_address or "No definida"
         )
         
         renamed_xls = report_xls_path.with_name(f"FACTURAS-SIN-RETENCION-{date.today().strftime('%d%m%Y')}.xlsx")
@@ -6575,6 +7804,10 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(handle_share_cancel_callback, pattern=r"^share_cancel$"))
     app.add_handler(CallbackQueryHandler(handle_ocr_callback, pattern=r"^ocr_"))
     app.add_handler(CallbackQueryHandler(handle_user_request_access_callback, pattern=r"^user_request_access$"))
+    app.add_handler(CallbackQueryHandler(handle_cfg_company_callback, pattern=r"^cfg_company_"))
+    app.add_handler(CallbackQueryHandler(handle_history_callback, pattern=r"^history_"))
+
+
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))

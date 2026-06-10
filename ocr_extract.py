@@ -317,3 +317,141 @@ def extract_barcode_from_image(image: Image.Image) -> str:
         logger.error(f"Error al extraer codigo de barras con Gemini: {e}")
         return "NONE"
 
+
+PRODUCT_OCR_PROMPT = """
+Analiza esta imagen (que puede ser una etiqueta de producto, caja, lista de precios, factura, empaque o catálogo).
+Identifica el producto principal que se muestra o se describe en el texto de la imagen.
+Extrae e indica UNICAMENTE el término de búsqueda más relevante (el código del producto o el nombre/descripción principal) para buscarlo en una base de datos de inventario.
+Devuelve el resultado en texto plano, en una sola línea, sin ningún formato (sin negritas, sin comillas), explicaciones ni caracteres adicionales.
+Si no puedes identificar ningún producto o texto relevante, responde estrictamente con la palabra "NONE" en mayúsculas.
+"""
+
+def extract_product_query_from_image(image: Image.Image) -> str:
+    """
+    Usa la API de Gemini para extraer el texto de búsqueda del producto (código o nombre) de la imagen.
+    """
+    if not config.GEMINI_API_KEY:
+        return "NONE"
+
+    client = genai.Client(api_key=config.GEMINI_API_KEY)
+    image_bytes = _image_to_bytes(image)
+    try:
+        response = _generate_content_with_retry(
+            client,
+            model=config.GEMINI_MODEL,
+            contents=[
+                PRODUCT_OCR_PROMPT,
+                genai.types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+            ],
+        )
+        result = _safe_str(getattr(response, "text", "")).strip()
+        result = re.sub(r"[`'\"]", "", result).strip()
+        if not result or "NONE" in result.upper():
+            return "NONE"
+        return result
+    except Exception as e:
+        logger.error(f"Error al extraer busqueda de producto con Gemini OCR: {e}")
+        return "NONE"
+
+
+DOCUMENT_PARSER_PROMPT = """
+Analiza esta imagen de una nota de entrega, cotización, factura o pedido.
+Extrae la información del cliente y la lista de todos los productos/ítems.
+
+Devuelve UNICAMENTE un JSON válido con esta estructura exacta:
+{
+  "client_name": "nombre del cliente o razón social",
+  "client_rif": "RIF del cliente, ej: J-12345678-9",
+  "client_address": "dirección fiscal del cliente",
+  "client_phone": "teléfono del cliente",
+  "items": [
+    {
+      "code": "código del producto si está visible",
+      "desc": "descripción o nombre del producto",
+      "qty": 10.0,
+      "priceUsd": 1.50
+    }
+  ]
+}
+
+Reglas:
+1) Si algún dato del cliente no es visible, usa cadena vacía "".
+2) Para cada ítem, extrae la cantidad (qty) y precio unitario en USD (priceUsd). Si los montos están en Bolívares (Bs) y la tasa de cambio está visible, conviértelos a USD o mantén USD si el documento original los indica.
+3) Formato numérico para qty y priceUsd: numérico simple (ej: 5.0, 12.50) sin comas ni otros caracteres.
+4) No agregues texto explicativo o formato fuera del JSON.
+"""
+
+def extract_document_data_from_image(image: Image.Image) -> dict:
+    """
+    Usa la API de Gemini para extraer datos de cliente y productos de una foto de documento.
+    """
+    if not config.GEMINI_API_KEY:
+        return {}
+
+    client = genai.Client(api_key=config.GEMINI_API_KEY)
+    image_bytes = _image_to_bytes(image)
+    try:
+        response = _generate_content_with_retry(
+            client,
+            model=config.GEMINI_MODEL,
+            contents=[
+                DOCUMENT_PARSER_PROMPT,
+                genai.types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+            ],
+        )
+        response_text = _safe_str(getattr(response, "text", ""))
+        return _extract_json_payload(response_text)
+    except Exception as e:
+        logger.error(f"Error al extraer datos de documento con Gemini OCR: {e}")
+        return {}
+
+
+DOCUMENT_TEXT_PARSER_PROMPT = """
+Analiza este texto que contiene una solicitud de pedido, cotización, factura o nota de entrega.
+Extrae la información del cliente y la lista de todos los productos/ítems.
+
+Devuelve UNICAMENTE un JSON válido con esta estructura exacta:
+{
+  "client_name": "nombre del cliente o razón social",
+  "client_rif": "RIF del cliente, ej: J-12345678-9",
+  "client_address": "dirección fiscal del cliente",
+  "client_phone": "teléfono del cliente",
+  "items": [
+    {
+      "code": "código del producto si está visible o deducible",
+      "desc": "descripción o nombre del producto",
+      "qty": 10.0,
+      "priceUsd": 1.50
+    }
+  ]
+}
+
+Reglas:
+1) Si algún dato del cliente no está explícito o no se menciona, usa cadena vacía "".
+2) Para cada ítem, extrae la cantidad (qty) y precio unitario en USD (priceUsd). Si los montos están en Bolívares (Bs) y la tasa de cambio está visible o implícita, conviértelos a USD o mantén USD si el original los indica.
+3) Formato numérico para qty y priceUsd: numérico simple (ej: 5.0, 12.50) sin comas ni otros caracteres.
+4) No agregues texto explicativo o formato fuera del JSON.
+"""
+
+def parse_document_text_with_gemini(text: str) -> dict:
+    """
+    Usa la API de Gemini para extraer datos de cliente y productos a partir de un texto libre.
+    """
+    if not config.GEMINI_API_KEY:
+        return {}
+
+    client = genai.Client(api_key=config.GEMINI_API_KEY)
+    try:
+        response = _generate_content_with_retry(
+            client,
+            model=config.GEMINI_MODEL,
+            contents=[
+                DOCUMENT_TEXT_PARSER_PROMPT,
+                text,
+            ],
+        )
+        response_text = _safe_str(getattr(response, "text", ""))
+        return _extract_json_payload(response_text)
+    except Exception as e:
+        logger.error(f"Error al extraer datos de texto con Gemini: {e}")
+        return {}

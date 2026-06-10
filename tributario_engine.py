@@ -62,7 +62,13 @@ def _parse_row_date(val: object) -> date | None:
     return None
 
 
-def get_sales_totals(start_date: date, end_date: date) -> tuple[Decimal, Decimal, int]:
+def get_sales_totals(
+    start_date: date,
+    end_date: date,
+    *,
+    facturas_emitidas_path: Path | None = None,
+    reportes_z_path: Path | None = None,
+) -> tuple[Decimal, Decimal, int]:
     """
     Calcula totales de ventas (Base Imponible, IVA, número de registros)
     a partir de FACTURAS-EMITIDAS.xlsx y REPORTES-Z.xlsx en el rango dado.
@@ -71,10 +77,12 @@ def get_sales_totals(start_date: date, end_date: date) -> tuple[Decimal, Decimal
     total_iva = Decimal("0")
     total_count = 0
 
-    files_to_read = [config.FACTURAS_EMITIDAS_PATH, config.REPORTES_Z_PATH]
+    f_emitidas = facturas_emitidas_path if facturas_emitidas_path is not None else config.FACTURAS_EMITIDAS_PATH
+    f_reportes_z = reportes_z_path if reportes_z_path is not None else config.REPORTES_Z_PATH
+    files_to_read = [f_emitidas, f_reportes_z]
 
     for path in files_to_read:
-        if not path.exists():
+        if not path or not path.exists():
             continue
         try:
             wb = load_workbook(path, read_only=True, data_only=True)
@@ -107,7 +115,12 @@ def get_sales_totals(start_date: date, end_date: date) -> tuple[Decimal, Decimal
     return total_base, total_iva, total_count
 
 
-def get_purchases_totals(start_date: date, end_date: date) -> tuple[Decimal, Decimal, int]:
+def get_purchases_totals(
+    start_date: date,
+    end_date: date,
+    *,
+    retenciones_emitidas_dir: Path | None = None,
+) -> tuple[Decimal, Decimal, int]:
     """
     Calcula totales de compras (Base Imponible, IVA, número de registros)
     a partir de los Excels mensuales de retenciones emitidas (RETEN-EMIT-*.xlsx)
@@ -118,8 +131,8 @@ def get_purchases_totals(start_date: date, end_date: date) -> tuple[Decimal, Dec
     total_iva = Decimal("0")
     total_count = 0
     
-    base_dir = config.RETENCIONES_EMITIDAS_DIR
-    if not base_dir.is_dir():
+    base_dir = retenciones_emitidas_dir if retenciones_emitidas_dir is not None else config.RETENCIONES_EMITIDAS_DIR
+    if not base_dir or not base_dir.is_dir():
         return total_base, total_iva, total_count
         
     for path in base_dir.glob("RETEN-EMIT-*.xlsx"):
@@ -153,7 +166,12 @@ def get_purchases_totals(start_date: date, end_date: date) -> tuple[Decimal, Dec
     return total_base, total_iva, total_count
 
 
-def get_withholdings_received_totals(start_date: date, end_date: date) -> tuple[Decimal, int]:
+def get_withholdings_received_totals(
+    start_date: date,
+    end_date: date,
+    *,
+    excel_path: Path | None = None,
+) -> tuple[Decimal, int]:
     """
     Calcula el total de retenciones de IVA recibidas de clientes en el rango dado.
     Se extraen de RETEN-REC.xlsx (config.EXCEL_PATH).
@@ -161,8 +179,8 @@ def get_withholdings_received_totals(start_date: date, end_date: date) -> tuple[
     total_ret = Decimal("0")
     total_count = 0
     
-    path = config.EXCEL_PATH
-    if not path.exists():
+    path = excel_path if excel_path is not None else config.EXCEL_PATH
+    if not path or not path.exists():
         return total_ret, total_count
         
     try:
@@ -191,7 +209,12 @@ def get_withholdings_received_totals(start_date: date, end_date: date) -> tuple[
     return total_ret, total_count
 
 
-def get_withholdings_issued_totals(start_date: date, end_date: date) -> tuple[Decimal, int]:
+def get_withholdings_issued_totals(
+    start_date: date,
+    end_date: date,
+    *,
+    retenciones_emitidas_dir: Path | None = None,
+) -> tuple[Decimal, int]:
     """
     Calcula el total de retenciones de IVA emitidas a proveedores en el rango dado.
     Busca los Excels mensuales en config.RETENCIONES_EMITIDAS_DIR.
@@ -199,8 +222,8 @@ def get_withholdings_issued_totals(start_date: date, end_date: date) -> tuple[De
     total_ret = Decimal("0")
     total_count = 0
     
-    base_dir = config.RETENCIONES_EMITIDAS_DIR
-    if not base_dir.is_dir():
+    base_dir = retenciones_emitidas_dir if retenciones_emitidas_dir is not None else config.RETENCIONES_EMITIDAS_DIR
+    if not base_dir or not base_dir.is_dir():
         return total_ret, total_count
         
     # Buscar todos los libros de retenciones emitidas del directorio
@@ -231,15 +254,20 @@ def get_withholdings_issued_totals(start_date: date, end_date: date) -> tuple[De
     return total_ret, total_count
 
 
-def get_islr_withholdings_totals(start_date: date, end_date: date) -> tuple[Decimal, int]:
+def get_islr_withholdings_totals(
+    start_date: date,
+    end_date: date,
+    *,
+    retenciones_islr_dir: Path | None = None,
+) -> tuple[Decimal, int]:
     """
     Calcula totales de ISLR retenido en compras a proveedores (Base Imponible, ISLR retenido, número de registros)
     a partir de los Excels mensuales en RETENCIONES_ISLR_DIR.
     """
     total_islr = Decimal("0")
     total_count = 0
-    base_dir = config.RETENCIONES_ISLR_DIR
-    if not base_dir.is_dir():
+    base_dir = retenciones_islr_dir if retenciones_islr_dir is not None else config.RETENCIONES_ISLR_DIR
+    if not base_dir or not base_dir.is_dir():
         return total_islr, total_count
 
     for path in base_dir.glob("RETEN-ISLR-*.xlsx"):
@@ -321,7 +349,17 @@ def get_seniat_due_date(year: int, month: int, fortnight: int) -> date:
         return date(decl_year, decl_month, day)
 
 
-def get_compromiso_tributario_report(year: int, month: int, fortnight: int) -> dict[str, object]:
+def get_compromiso_tributario_report(
+    year: int,
+    month: int,
+    fortnight: int,
+    *,
+    facturas_emitidas_path: Path | None = None,
+    reportes_z_path: Path | None = None,
+    retenciones_emitidas_dir: Path | None = None,
+    excel_path: Path | None = None,
+    retenciones_islr_dir: Path | None = None,
+) -> dict[str, object]:
     """
     Genera un informe completo estructurado de todos los compromisos tributarios
     de la quincena indicada.
@@ -329,19 +367,40 @@ def get_compromiso_tributario_report(year: int, month: int, fortnight: int) -> d
     start_date, end_date = get_fortnight_range(year, month, fortnight)
     
     # 1. Ventas
-    v_base, v_iva, v_count = get_sales_totals(start_date, end_date)
+    v_base, v_iva, v_count = get_sales_totals(
+        start_date,
+        end_date,
+        facturas_emitidas_path=facturas_emitidas_path,
+        reportes_z_path=reportes_z_path
+    )
     
     # 2. Compras
-    c_base, c_iva, c_count = get_purchases_totals(start_date, end_date)
+    c_base, c_iva, c_count = get_purchases_totals(
+        start_date,
+        end_date,
+        retenciones_emitidas_dir=retenciones_emitidas_dir
+    )
     
     # 3. Retenciones Recibidas
-    ret_rec, ret_rec_count = get_withholdings_received_totals(start_date, end_date)
+    ret_rec, ret_rec_count = get_withholdings_received_totals(
+        start_date,
+        end_date,
+        excel_path=excel_path
+    )
     
     # 4. Retenciones Emitidas
-    ret_emi, ret_emi_count = get_withholdings_issued_totals(start_date, end_date)
+    ret_emi, ret_emi_count = get_withholdings_issued_totals(
+        start_date,
+        end_date,
+        retenciones_emitidas_dir=retenciones_emitidas_dir
+    )
     
     # 4b. Retenciones de ISLR a proveedores en compras
-    ret_islr_compras, ret_islr_compras_count = get_islr_withholdings_totals(start_date, end_date)
+    ret_islr_compras, ret_islr_compras_count = get_islr_withholdings_totals(
+        start_date,
+        end_date,
+        retenciones_islr_dir=retenciones_islr_dir
+    )
     
     # 5. Cálculos netos de IVA por pagar
     # IVA a pagar = IVA Débito (Ventas) - IVA Crédito (Compras) - Retenciones Recibidas (Clientes)
@@ -456,7 +515,16 @@ def format_seniat_txt_line(
     )
 
 
-def generate_seniat_txt_data(year: int, month: int, fortnight: int) -> tuple[str, str]:
+def generate_seniat_txt_data(
+    year: int,
+    month: int,
+    fortnight: int,
+    *,
+    retenciones_emitidas_dir: Path | None = None,
+    facturas_recibidas_path: Path | None = None,
+    excel_path: Path | None = None,
+    emitter_rif: str | None = None,
+) -> tuple[str, str]:
     """
     Genera el contenido para los archivos TXT de declaración de IVA (Emitidas y Recibidas)
     para una quincena específica.
@@ -467,11 +535,14 @@ def generate_seniat_txt_data(year: int, month: int, fortnight: int) -> tuple[str
     emitidas_lines = []
     recibidas_lines = []
     
+    # RIF del Agente de Retención (nuestra empresa)
+    agent_rif = emitter_rif if emitter_rif is not None else config.EMITTER_RIF
+    
     # ----------------------------------------------------
     # 1. RETENCIONES EMITIDAS (Compras / Proveedores)
     # ----------------------------------------------------
-    base_dir = config.RETENCIONES_EMITIDAS_DIR
-    if base_dir.is_dir():
+    base_dir = retenciones_emitidas_dir if retenciones_emitidas_dir is not None else config.RETENCIONES_EMITIDAS_DIR
+    if base_dir and base_dir.is_dir():
         for path in sorted(base_dir.glob("RETEN-EMIT-*.xlsx")):
             try:
                 wb = load_workbook(path, read_only=True, data_only=True)
@@ -505,7 +576,8 @@ def generate_seniat_txt_data(year: int, month: int, fortnight: int) -> tuple[str
                     ctrls = [c.strip() for c in re.split(r"[|,]", controles) if c.strip()]
                     
                     # Intentar cargar detalles desde el libro de facturas recibidas (compras)
-                    items = excel_store.load_facturas_by_document_numbers(config.FACTURAS_RECIBIDAS_PATH, docs)
+                    f_recibidas = facturas_recibidas_path if facturas_recibidas_path is not None else config.FACTURAS_RECIBIDAS_PATH
+                    items = excel_store.load_facturas_by_document_numbers(f_recibidas, docs)
                     items_by_doc = {str(item.numero_documento).strip().upper(): item for item in items}
                     
                     N = len(docs) or 1
@@ -539,7 +611,7 @@ def generate_seniat_txt_data(year: int, month: int, fortnight: int) -> tuple[str
                             alicuota = ((iva / base) * 100).quantize(Decimal("0.01"))
                             
                         line = format_seniat_txt_line(
-                            agent_rif=config.EMITTER_RIF,
+                            agent_rif=agent_rif,
                             periodo=periodo_fiscal,
                             invoice_date=invoice_date_str,
                             operation_type="C",
@@ -563,8 +635,8 @@ def generate_seniat_txt_data(year: int, month: int, fortnight: int) -> tuple[str
     # ----------------------------------------------------
     # 2. RETENCIONES RECIBIDAS (Ventas / Clientes)
     # ----------------------------------------------------
-    path_r = config.EXCEL_PATH
-    if path_r.exists():
+    path_r = excel_path if excel_path is not None else config.EXCEL_PATH
+    if path_r and path_r.exists():
         try:
             wb = load_workbook(path_r, read_only=True, data_only=True)
             ws = wb.active
@@ -615,7 +687,7 @@ def generate_seniat_txt_data(year: int, month: int, fortnight: int) -> tuple[str
                         alicuota = ((iva / base) * 100).quantize(Decimal("0.01"))
                         
                     line = format_seniat_txt_line(
-                        agent_rif=config.EMITTER_RIF,
+                        agent_rif=agent_rif,
                         periodo=periodo_fiscal,
                         invoice_date=inv_date_str,
                         operation_type="V",

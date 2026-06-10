@@ -98,14 +98,25 @@ def register_user(
         data["users"] = {}
         
     uid_str = str(user_id)
+    existing_user = data["users"].get(uid_str, {})
     data["users"][uid_str] = {
         "name": name,
         "role": role,
         "status": "active",
         "expiration_date": expiration_date,
         "limit_ops": limit_ops,
-        "consumed_ops": data["users"].get(uid_str, {}).get("consumed_ops", 0)
+        "consumed_ops": existing_user.get("consumed_ops", 0)
     }
+    
+    # Inicializar campos de empresa por defecto si el rol es nueva_empresa
+    if role == "nueva_empresa":
+        data["users"][uid_str]["company_name"] = existing_user.get("company_name", "FlashTax")
+        data["users"][uid_str]["company_rif"] = existing_user.get("company_rif", "J-00000000-0")
+        data["users"][uid_str]["company_type"] = existing_user.get("company_type", "Especial")
+        data["users"][uid_str]["company_email"] = existing_user.get("company_email", "")
+        data["users"][uid_str]["company_phone"] = existing_user.get("company_phone", "")
+        data["users"][uid_str]["company_address"] = existing_user.get("company_address", "")
+        
     save_users(data)
 
 

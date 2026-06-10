@@ -1089,6 +1089,9 @@ def export_comprobante_islr_pdf(
     total_factura: Decimal,
     numero_documento: str,
     numero_control: str,
+    emisor_nombre: str = "SUMINISTROS FERRETEROS VITTORIA (SUFEVICA), C.A.",
+    emisor_rif: str = "J-40194130-3",
+    emisor_brand: str = "SUFEVICA",
 ) -> Path:
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen import canvas
@@ -1101,12 +1104,12 @@ def export_comprobante_islr_pdf(
 
     # Header
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(left, y, "SUMINISTROS FERRETEROS VITTORIA (SUFEVICA), C.A.")
+    c.drawString(left, y, emisor_nombre)
     c.setFont("Helvetica", 9)
     c.drawRightString(right, y, f"Comprobante Nro: {numero_comprobante}")
     y -= 13
     c.setFont("Helvetica-Bold", 10)
-    c.drawString(left, y, "RIF: J-40194130-3")
+    c.drawString(left, y, f"RIF: {emisor_rif}")
     c.drawRightString(right, y, f"Fecha Emisión: {fecha_emision}")
     y -= 25
 
@@ -1177,7 +1180,7 @@ def export_comprobante_islr_pdf(
     c.setFont("Helvetica-Bold", 8)
     c.line(left + 40, y, left + 180, y)
     c.drawCentredString(left + 110, y - 12, "FIRMA Y SELLO AGENTE")
-    c.drawCentredString(left + 110, y - 22, "SUFEVICA, C.A.")
+    c.drawCentredString(left + 110, y - 22, emisor_brand)
     
     c.line(right - 180, y, right - 40, y)
     c.drawCentredString(right - 110, y - 12, "FIRMA BENEFICIARIO")
@@ -1226,12 +1229,14 @@ def export_comprobante_emitido_excel(
     direccion_fiscal_prov: str,
     items: list[FacturaCompraRow],
     porcentaje_retencion: Decimal,
+    emisor_nombre: str = "SUMINISTROS FERRETEROS VITTORIA (SUFEVICA), C.A.",
+    emisor_rif: str = "J-40194130-3",
 ) -> Path:
     wb = Workbook()
     ws = wb.active
     ws.title = "Comprobante"
-    ws.append(["SUMINISTROS FERRETEROS VITTORIA (SUFEVICA), C.A."])
-    ws.append(["RIF J-40194130-3"])
+    ws.append([emisor_nombre])
+    ws.append([f"RIF {emisor_rif}"])
     ws.append(["COMPROBANTE DE RETENCION DEL IVA"])
     ws.append([])
     ws.append(["Numero", numero_comprobante])
@@ -1298,6 +1303,8 @@ def export_comprobante_emitido_pdf(
     items: list[FacturaCompraRow],
     porcentaje_retencion: Decimal,
     firma_sello_path: Path | str | None = None,
+    emisor_nombre: str = "SUMINISTROS FERRETEROS VITTORIA (SUFEVICA), C.A.",
+    emisor_rif: str = "J-40194130-3",
 ) -> Path:
     from reportlab.lib.pagesizes import landscape, letter
     from reportlab.lib.units import cm
@@ -1311,10 +1318,10 @@ def export_comprobante_emitido_pdf(
 
     # Encabezado principal
     c.setFont("Helvetica-Bold", 12)
-    c.drawCentredString(width / 2, y, "SUMINISTROS FERRETEROS VITTORIA (SUFEVICA), C.A.")
+    c.drawCentredString(width / 2, y, emisor_nombre)
     y -= 13
     c.setFont("Helvetica-Bold", 10)
-    c.drawCentredString(width / 2, y, "RIF.- J-40194130-3")
+    c.drawCentredString(width / 2, y, f"RIF.- {emisor_rif}")
     y -= 14
     c.setFont("Helvetica-Bold", 12)
     c.drawCentredString(width / 2, y, "COMPROBANTE DE RETENCION DEL IMPUESTO AL VALOR AGREGADO")
@@ -1548,8 +1555,8 @@ def export_comprobante_emitido_pdf(
     c.drawCentredString(
         width / 2,
         y,
-        "ESTE COMPROBANTE SE EMITE SEGÚN LO ESTABLECIDO EN EL ARTÍCULO 16 DE PROVIDENCIA ADMINISTRATIVA "
-        "N° SNAT/2015/0049 DE FECHA 10/08/2015",
+        "ESTE COMPROBANTE SE EMITE SEGÚN LO ESTABLECIDO EN EL ARTÍCULO 16 DE LA PROVIDENCIA ADMINISTRATIVA "
+        "N° SNAT/2025/000054 DE FECHA 16/07/2025",
     )
     c.save()
     return out_path
@@ -1585,6 +1592,11 @@ def generate_premium_report_excel(
     rows: list[list[object]],
     numeric_cols: list[int],
     sum_cols: list[int],
+    *,
+    emisor_nombre: str = "Suministros Ferreteros Vittoria, C.A.(SUFEVICA)",
+    emisor_rif: str = "J-40194130-3",
+    emisor_telefono: str = "+582812768765",
+    emisor_direccion: str = "AV JUAN DE URPIN CC RESIDENCIAS VITTORIA III, EDIF.F NIVEL PB LOCAL NRO. 2 SECTOR EL ESPEJO BARCELONA ANZOATEGUI ZONA POSTAL 6001",
 ) -> Path:
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -1624,11 +1636,11 @@ def generate_premium_report_excel(
 
     # Metadata Box (Rows 5 to 10)
     meta_info = [
-        ("Agente de retención:", "Suministros Ferreteros Vittoria, C.A.(SUFEVICA)"),
-        ("RIF:", "J-40194130-3"),
+        ("Agente de retención:", emisor_nombre),
+        ("RIF:", emisor_rif),
         ("Periodo:", period_str),
-        ("Teléfono:", "+582812768765"),
-        ("Dirección:", "AV JUAN DE URPIN CC RESIDENCIAS VITTORIA III, EDIF.F NIVEL PB LOCAL NRO. 2 SECTOR EL ESPEJO BARCELONA ANZOATEGUI ZONA POSTAL 6001"),
+        ("Teléfono:", emisor_telefono),
+        ("Dirección:", emisor_direccion),
         ("Facturas listadas:", len(rows)),
     ]
 

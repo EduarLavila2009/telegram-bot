@@ -35,8 +35,13 @@ def generate_document_pdf(doc_data: dict, out_path: Path) -> Path:
     
     styles = getSampleStyleSheet()
     
-    # Paleta de colores oficial de SUFEVICA extraída de su logo (azul marino profundo)
-    PRIMARY_COLOR = colors.HexColor("#1A1B54")   # Azul marino oficial SUFEVICA
+    # Paleta de colores oficial dinámica (con fallback a SUFEVICA)
+    brand = doc_data.get("company_brand", "SUFEVICA")
+    company_name = doc_data.get("company_name", "SUMINISTROS FERRETEROS VITTORIA, C.A.")
+    company_rif = doc_data.get("company_rif", "J-40194130-3")
+    primary_color_str = doc_data.get("primary_color", "#1A1B54")
+
+    PRIMARY_COLOR = colors.HexColor(primary_color_str)
     SECONDARY_COLOR = colors.HexColor("#475569") # Gris oscuro para detalles de contacto
     TEXT_DARK = colors.HexColor("#1f2937")       # Carbón oscuro para lectura
     BORDER_COLOR = colors.HexColor("#475569")    # Gris pizarra para líneas divisorias principales
@@ -130,16 +135,13 @@ def generate_document_pdf(doc_data: dict, out_path: Path) -> Path:
     
     story = []
     
-    # 1. ENCABEZADO SUPERIOR (Logo de SUFEVICA izquierda | Datos de Contacto y logo derecha)
-    # Cargar el logo compuesto (Icono + Texto, Texto es 50% más grande que el Icono)
-    logo_icono_path = Path(__file__).resolve().parent / "logo_icono.jpg"
-    logo_texto_path = Path(__file__).resolve().parent / "logo_texto.jpg"
+    # 1. ENCABEZADO SUPERIOR (Logo dinámico izquierda o título de texto | Datos de Contacto derecha)
+    logo_icono_path_raw = doc_data.get("logo_icono_path")
+    logo_icono_path = Path(logo_icono_path_raw) if logo_icono_path_raw else Path(__file__).resolve().parent / "logo_icono.jpg"
+    logo_texto_path_raw = doc_data.get("logo_texto_path")
+    logo_texto_path = Path(logo_texto_path_raw) if logo_texto_path_raw else Path(__file__).resolve().parent / "logo_texto.jpg"
     
-    if logo_icono_path.exists() and logo_texto_path.exists():
-        # Proporciones:
-        # Icono: 636 x 598 (~1.06). Base: Ancho = 42pt, Alto = 39.5pt
-        # Texto: 709 x 309 (~2.29). Ancho es 50% más grande que el icono (63pt) y se incrementa en otro 50% a petición del usuario -> 94.5pt
-        # Alto correspondiente para el texto con su proporción: 94.5 / 2.29 = 41.25pt
+    if brand == "SUFEVICA" and logo_icono_path.exists() and logo_texto_path.exists():
         img_icono = Image(str(logo_icono_path), width=42, height=39.5)
         img_texto = Image(str(logo_texto_path), width=94.5, height=41.25)
         
@@ -154,14 +156,24 @@ def generate_document_pdf(doc_data: dict, out_path: Path) -> Path:
             ('TOPPADDING', (0,0), (-1,-1), 0),
         ]))
     else:
-        logo_element = Paragraph("<b>SUMINISTROS FERRETEROS VITTORIA, C.A.</b>", ParagraphStyle(name='FallbackTitle', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=14, textColor=PRIMARY_COLOR))
+        # Título de texto dinámico para FlashTax y fallbacks
+        logo_element = Paragraph(f"<b>{company_name}</b>", ParagraphStyle(
+            name='FallbackTitle', 
+            parent=styles['Normal'], 
+            fontName='Helvetica-Bold', 
+            fontSize=12, 
+            leading=14,
+            textColor=PRIMARY_COLOR
+        ))
         
-    address_text = """Av. Juan de Urpín, CC Res. Vittoria III, Edif. F, Nivel PB, Local Nro. 2<br/>
-    Barcelona - Edo. Anzoátegui<br/>
-    Teléfono: 0424-890.61.68<br/>
-    E-mail: sufevica@gmail.com
-    """
-    p_address = Paragraph(address_text.replace('\n', ''), styles['HeaderAddress'])
+    default_address = (
+        "Av. Juan de Urpín, CC Res. Vittoria III, Edif. F, Nivel PB, Local Nro. 2<br/>"
+        "Barcelona - Edo. Anzoátegui<br/>"
+        "Teléfono: 0424-890.61.68<br/>"
+        "E-mail: sufevica@gmail.com"
+    )
+    address_text = doc_data.get("company_address", default_address).replace('\n', '<br/>')
+    p_address = Paragraph(address_text, styles['HeaderAddress'])
     
     header_table_data = [
         [logo_element, "", p_address]
@@ -364,13 +376,30 @@ def generate_document_pdf(doc_data: dict, out_path: Path) -> Path:
     # Firma "Recibi Conforme" a la izquierda en el mismo nivel
     p_recibi = Paragraph("<br/><br/><b>Recibi Conforme</b>  ________________________________________", ParagraphStyle(name='RecibiFL', parent=styles['Normal'], fontName='Helvetica', fontSize=9, textColor=PRIMARY_COLOR))
     
+    signature_path_str = doc_data.get("signature_path")
+    p_left = p_recibi
+    if signature_path_str:
+        sig_path = Path(signature_path_str)
+        if sig_path.exists():
+            img_firma = Image(str(sig_path), width=100, height=80)
+            firma_layout = Table([[img_firma], [p_recibi]], colWidths=[310])
+            firma_layout.setStyle(TableStyle([
+                ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+                ('VALIGN', (0,0), (-1,-1), 'BOTTOM'),
+                ('LEFTPADDING', (0,0), (-1,-1), 0),
+                ('RIGHTPADDING', (0,0), (-1,-1), 0),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 0),
+                ('TOPPADDING', (0,0), (-1,-1), 0),
+            ]))
+            p_left = firma_layout
+            
     bottom_row_data = [
-        [p_recibi, "", totales_box_table]
+        [p_left, "", totales_box_table]
     ]
     # Ancho total: 540pt. Firma (310), Separador (40), Totales (190)
     bottom_row_table = Table(bottom_row_data, colWidths=[310, 40, 190])
     bottom_row_table.setStyle(TableStyle([
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('VALIGN', (0,0), (-1,-1), 'BOTTOM' if signature_path_str else 'MIDDLE'),
         ('LEFTPADDING', (0,0), (-1,-1), 0),
         ('RIGHTPADDING', (0,0), (-1,-1), 0),
     ]))
