@@ -3286,6 +3286,7 @@ async def _show_startup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE,
     if role == "admin":
         kb_list.append([InlineKeyboardButton("🏢 Operar SUFEVICA", callback_data="work_panel:sufevica")])
         kb_list.append([InlineKeyboardButton("👥 Administrar Clientes", callback_data="work_panel:admin_clients")])
+        kb_list.append([InlineKeyboardButton("✉️ Enviar Invitación", callback_data="work_panel:send_invite")])
         welcome_text = "🚀 *Menú de Inicio - Panel de Control* 🚀\n\nBienvenido, Administrador. Selecciona tu panel de trabajo:"
     elif role == "nueva_empresa":
         kb_list.append([InlineKeyboardButton("🏢 Operar Mi Empresa", callback_data="work_panel:client_operate")])
@@ -3343,6 +3344,53 @@ async def handle_work_panel_callback(update: Update, context: ContextTypes.DEFAU
         )
     elif action == "client_config":
         await _show_company_config_menu(update, context, msg_to_edit=msg)
+    elif action == "send_invite":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("👤 Cliente (FlashTax)", callback_data="work_panel:invite_select:cliente")],
+            [InlineKeyboardButton("🛡️ Usuario SUFEVICA", callback_data="work_panel:invite_select:sufevica")],
+            [InlineKeyboardButton("🔙 Volver al Inicio", callback_data="work_panel:start")]
+        ])
+        await msg.edit_text(
+            "✉️ *Enviar Enlace de Invitación*\n\n"
+            "Selecciona el destinatario de la invitación:",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+    elif action == "invite_select":
+        import urllib.parse
+        target_type = parts[2]
+        bot_username = context.bot.username
+        
+        if target_type == "sufevica":
+            link = f"https://t.me/{bot_username}?start=solicitar_sufevica"
+            text_msg = (
+                "Hola, te invito a unirte al bot financiero como Usuario SUFEVICA.\n"
+                "Por favor, presiona el siguiente enlace para solicitar tu nivel de acceso:\n"
+            )
+            title_lbl = "Usuario SUFEVICA"
+        else:
+            link = f"https://t.me/{bot_username}?start=solicitar_cliente"
+            text_msg = (
+                "Hola, te invito a registrarte como Cliente (FlashTax) en el bot financiero.\n"
+                "Por favor, presiona el siguiente enlace para iniciar el registro de tu empresa:\n"
+            )
+            title_lbl = "Cliente (FlashTax)"
+            
+        share_url = f"https://t.me/share/url?url={urllib.parse.quote(link)}&text={urllib.parse.quote(text_msg)}"
+        
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔗 Compartir con mis Contactos", url=share_url)],
+            [InlineKeyboardButton("🔙 Atrás", callback_data="work_panel:send_invite")]
+        ])
+        
+        await msg.edit_text(
+            f"✉️ *Compartir Invitación - {title_lbl}*\n\n"
+            f"Se ha generado el enlace de invitación:\n"
+            f"`{link}`\n\n"
+            f"Pulsa el botón de abajo para abrir tu lista de contactos en Telegram y enviarles el enlace automáticamente.",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
     elif action == "start":
         await _show_startup_menu(update, context, msg_to_edit=msg)
 
