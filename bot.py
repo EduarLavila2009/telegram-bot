@@ -288,9 +288,12 @@ async def _deny(update: Update, context: ContextTypes.DEFAULT_TYPE = None) -> No
         if u is not None:
             kb = None
             if context:
-                kb = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📥 Solicitar Acceso", callback_data="user_request_access")
-                ]])
+                kb = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("📥 Solicitar como Cliente", callback_data="user_request_access:cliente"),
+                        InlineKeyboardButton("📥 Solicitar como SUFEVICA", callback_data="user_request_access:sufevica")
+                    ]
+                ])
             await msg.reply_text(
                 "❌ *Acceso no autorizado / Suscripción Expirada*\n\n"
                 f"Tu ID de Telegram es: `{u.id}`\n\n"
@@ -302,7 +305,12 @@ async def _deny(update: Update, context: ContextTypes.DEFAULT_TYPE = None) -> No
             await msg.reply_text("Acceso no autorizado.")
 
 
-async def _handle_solicitar_access_flow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _handle_solicitar_access_flow(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    req_type: str = "cliente",
+    callback_query = None
+) -> None:
     import html
     msg = update.effective_message
     if not msg:
@@ -312,19 +320,31 @@ async def _handle_solicitar_access_flow(update: Update, context: ContextTypes.DE
         return
     
     if _allowed(update):
-        await msg.reply_text(
-            "✅ Ya tienes acceso activo y autorizado al bot. ¡Usa el menú inferior para navegar!",
-            reply_markup=_main_keyboard(u.id)
-        )
+        text_already = "✅ Ya tienes acceso activo y autorizado al bot. ¡Usa el menú inferior para navegar!"
+        if callback_query:
+            await callback_query.edit_message_text(text_already)
+        else:
+            await msg.reply_text(text_already, reply_markup=_main_keyboard(u.id))
         return
         
     admin_id = config.ALLOWED_USER_ID
-    kb = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Autorizar", callback_data=f"admin_req_start:{u.id}"),
-            InlineKeyboardButton("❌ Rechazar", callback_data=f"admin_req_reject:{u.id}")
-        ]
-    ])
+    if req_type == "sufevica":
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Autorizar SUFEVICA", callback_data=f"admin_req_sufevica_start:{u.id}"),
+                InlineKeyboardButton("❌ Rechazar", callback_data=f"admin_req_reject:{u.id}")
+            ]
+        ])
+        type_lbl = "SUFEVICA (Interno)"
+    else:
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Autorizar Cliente", callback_data=f"admin_req_cliente_start:{u.id}"),
+                InlineKeyboardButton("❌ Rechazar", callback_data=f"admin_req_reject:{u.id}")
+            ]
+        ])
+        type_lbl = "Cliente (FlashTax)"
+
     name_str = f"{u.first_name} {u.last_name or ''}".strip()
     name_escaped = html.escape(name_str)
     username_escaped = html.escape(u.username) if u.username else "sin_username"
@@ -333,6 +353,7 @@ async def _handle_solicitar_access_flow(update: Update, context: ContextTypes.DE
         await context.bot.send_message(
             chat_id=admin_id,
             text=f"🔔 <b>Nueva solicitud de acceso al bot:</b>\n\n"
+                 f"• <b>Tipo:</b> {type_lbl}\n"
                  f"• <b>Usuario:</b> {user_mention}\n"
                  f"• <b>Nombre:</b> {name_escaped}\n"
                  f"• <b>ID de Telegram:</b> <code>{u.id}</code>\n"
@@ -341,24 +362,29 @@ async def _handle_solicitar_access_flow(update: Update, context: ContextTypes.DE
             parse_mode="HTML",
             reply_markup=kb
         )
-        await msg.reply_text(
+        success_text = (
             "📨 *Solicitud de Acceso Enviada*\n\n"
             "Tu solicitud ha sido recibida por el administrador. "
-            "Te enviaremos una notificación automática por este chat cuando sea aprobada.",
-            parse_mode="Markdown"
+            "Te enviaremos una notificación automática por este chat cuando sea aprobada."
         )
+        if callback_query:
+            await callback_query.edit_message_text(success_text, parse_mode="Markdown")
+        else:
+            await msg.reply_text(success_text, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Error al enviar solicitud de acceso al admin: {e}")
-        await msg.reply_text(
+        err_text = (
             "❌ *Error al enviar solicitud*\n\n"
             "No se pudo enviar la solicitud al administrador en este momento. "
-            "Por favor, intenta de nuevo más tarde o contacta al administrador directamente.",
-            parse_mode="Markdown"
+            "Por favor, intenta de nuevo más tarde o contacta al administrador directamente."
         )
+        if callback_query:
+            await callback_query.edit_message_text("❌ Ocurrió un error al enviar la solicitud. Intenta de nuevo más tarde.")
+        else:
+            await msg.reply_text(err_text, parse_mode="Markdown")
 
 
 async def handle_user_request_access_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    import html
     q = update.callback_query
     if not q:
         return
@@ -367,38 +393,12 @@ async def handle_user_request_access_callback(update: Update, context: ContextTy
     if not u:
         return
         
-    admin_id = config.ALLOWED_USER_ID
-    kb = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Autorizar", callback_data=f"admin_req_start:{u.id}"),
-            InlineKeyboardButton("❌ Rechazar", callback_data=f"admin_req_reject:{u.id}")
-        ]
-    ])
-    name_str = f"{u.first_name} {u.last_name or ''}".strip()
-    name_escaped = html.escape(name_str)
-    username_escaped = html.escape(u.username) if u.username else "sin_username"
-    user_mention = f'<a href="tg://user?id={u.id}">{name_escaped}</a>'
-    try:
-        await context.bot.send_message(
-            chat_id=admin_id,
-            text=f"🔔 <b>Nueva solicitud de acceso al bot:</b>\n\n"
-                 f"• <b>Usuario:</b> {user_mention}\n"
-                 f"• <b>Nombre:</b> {name_escaped}\n"
-                 f"• <b>ID de Telegram:</b> <code>{u.id}</code>\n"
-                 f"• <b>Username:</b> @{username_escaped}\n\n"
-                 f"¿Deseas autorizar a este usuario?",
-            parse_mode="HTML",
-            reply_markup=kb
-        )
-        await q.edit_message_text(
-            "📨 *Solicitud de Acceso Enviada*\n\n"
-            "Tu solicitud ha sido recibida por el administrador. "
-            "Te enviaremos una notificación automática por este chat cuando sea aprobada.",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        logger.error(f"Error al procesar callback de solicitud de acceso: {e}")
-        await q.edit_message_text("❌ Ocurrió un error al enviar la solicitud. Intenta de nuevo más tarde.")
+    data = (q.data or "").strip()
+    req_type = "cliente"
+    if ":" in data:
+        req_type = data.split(":")[1]
+        
+    await _handle_solicitar_access_flow(update, context, req_type=req_type, callback_query=q)
 
 
 
@@ -3348,9 +3348,14 @@ async def handle_work_panel_callback(update: Update, context: ContextTypes.DEFAU
 
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if context.args and context.args[0] == "solicitar":
-        await _handle_solicitar_access_flow(update, context)
-        return
+    if context.args:
+        arg = context.args[0]
+        if arg == "solicitar_sufevica":
+            await _handle_solicitar_access_flow(update, context, req_type="sufevica")
+            return
+        elif arg == "solicitar_cliente" or arg == "solicitar":
+            await _handle_solicitar_access_flow(update, context, req_type="cliente")
+            return
 
     if not _allowed(update):
         await _deny(update, context)
@@ -7355,12 +7360,15 @@ async def _show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         [InlineKeyboardButton("🔙 Volver al Inicio", callback_data="work_panel:start")]
     ])
     bot_username = context.bot.username
-    request_link = f"https://t.me/{bot_username}?start=solicitar"
+    request_link_sufevica = f"https://t.me/{bot_username}?start=solicitar_sufevica"
+    request_link_cliente = f"https://t.me/{bot_username}?start=solicitar_cliente"
     
     text = (
-        "⚙️ *Panel de Administración de Clientes*\n\n"
+        "⚙️ *Panel de Administración de Clientes y Usuarios*\n\n"
         "Selecciona una opción para gestionar suscripciones, roles y cuotas de uso:\n\n"
-        f"🔗 *Enlace directo de solicitud:*\n`{request_link}`"
+        "🔗 *Enlaces de Solicitud de Acceso:*\n"
+        f"• *Usuarios SUFEVICA:* `{request_link_sufevica}`\n"
+        f"• *Clientes (FlashTax):* `{request_link_cliente}`"
     )
     
     if msg_to_edit:
@@ -7577,6 +7585,134 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                          f"• *Plan:* {plan_lbl}\n"
                          f"• *Vencimiento:* `{exp_date}`\n"
                          f"• *Privilegios:* {role_lbl}\n\n"
+                         f"Presiona /start para activar el menú y comenzar a usar el bot.",
+                    parse_mode="Markdown",
+                    reply_markup=_main_keyboard(target_uid)
+                )
+            except Exception as e:
+                logger.error(f"No se pudo notificar al usuario {target_uid}: {e}")
+            return
+
+        elif action == "admin_req_sufevica_start":
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏛️ Tributos Only", callback_data=f"admin_req_sufevica_role:{target_uid}:tributos_only")],
+                [InlineKeyboardButton("📋 Cotizaciones Only", callback_data=f"admin_req_sufevica_role:{target_uid}:cotizaciones_only")],
+                [InlineKeyboardButton("⭐ Acceso Total", callback_data=f"admin_req_sufevica_role:{target_uid}:full_access")],
+                [InlineKeyboardButton("❌ Rechazar Solicitud", callback_data=f"admin_req_reject:{target_uid}")]
+            ])
+            await msg.edit_text(
+                f"🛡️ *Autorizar Usuario SUFEVICA (ID: {target_uid})*\n\n"
+                f"El tiempo de uso es indefinido.\n\n"
+                f"Selecciona el nivel de autorización (rol):",
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+            return
+
+        elif action == "admin_req_sufevica_role":
+            import html
+            role = parts[2]
+            try:
+                chat = await context.bot.get_chat(int(target_uid))
+                name = f"{chat.first_name} {chat.last_name or ''}".strip()
+                username_str = f"@{chat.username}" if chat.username else "sin username"
+            except Exception:
+                name = "Usuario Solicitante"
+                username_str = "desconocido"
+
+            user_manager.register_user(
+                user_id=target_uid,
+                name=name,
+                role=role,
+                expiration_date="never",
+                limit_ops=-1
+            )
+
+            role_lbl = "Tributos Only" if role == "tributos_only" else ("Cotizaciones Only" if role == "cotizaciones_only" else "Acceso Total")
+            name_escaped = html.escape(name)
+            username_escaped = html.escape(username_str)
+            await msg.edit_text(
+                f"✅ <b>¡Usuario SUFEVICA Autorizado con Éxito!</b>\n\n"
+                f"• <b>Nombre:</b> {name_escaped} ({username_escaped})\n"
+                f"• <b>ID:</b> <code>{target_uid}</code>\n"
+                f"• <b>Plan / Duración:</b> Indefinido (Sin límite)\n"
+                f"• <b>Rol:</b> {role_lbl}",
+                parse_mode="HTML"
+            )
+
+            try:
+                await context.bot.send_message(
+                    chat_id=int(target_uid),
+                    text=f"🎉 *¡Tu solicitud de acceso como SUFEVICA ha sido aprobada!*\n\n"
+                         f"El administrador te ha concedido acceso con los siguientes detalles:\n\n"
+                         f"• *Privilegios:* {role_lbl}\n"
+                         f"• *Vencimiento:* Indefinido (Sin límite)\n\n"
+                         f"Presiona /start para activar el menú y comenzar a usar el bot.",
+                    parse_mode="Markdown",
+                    reply_markup=_main_keyboard(target_uid)
+                )
+            except Exception as e:
+                logger.error(f"No se pudo notificar al usuario {target_uid}: {e}")
+            return
+
+        elif action == "admin_req_cliente_start":
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("📅 Prueba (5 días)", callback_data=f"admin_req_cliente_plan:{target_uid}:5")],
+                [InlineKeyboardButton("📅 Plan Estándar (30 días)", callback_data=f"admin_req_cliente_plan:{target_uid}:30")],
+                [InlineKeyboardButton("📅 Plan Premium (3 meses)", callback_data=f"admin_req_cliente_plan:{target_uid}:90")],
+                [InlineKeyboardButton("❌ Rechazar Solicitud", callback_data=f"admin_req_reject:{target_uid}")]
+            ])
+            await msg.edit_text(
+                f"🏢 *Autorizar Cliente (ID: {target_uid})*\n\n"
+                f"El rol asignado será automáticamente 'Nueva Empresa' (Propietario).\n\n"
+                f"Selecciona la duración del plan del cliente:",
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+            return
+
+        elif action == "admin_req_cliente_plan":
+            import html
+            days = int(parts[2])
+            try:
+                chat = await context.bot.get_chat(int(target_uid))
+                name = f"{chat.first_name} {chat.last_name or ''}".strip()
+                username_str = f"@{chat.username}" if chat.username else "sin username"
+            except Exception:
+                name = "Usuario Solicitante"
+                username_str = "desconocido"
+
+            exp_date = (date.today() + timedelta(days=days)).strftime("%Y-%m-%d")
+            
+            user_manager.register_user(
+                user_id=target_uid,
+                name=name,
+                role="nueva_empresa",
+                expiration_date=exp_date,
+                limit_ops=-1
+            )
+
+            plan_lbl = "Prueba (5 días)" if days == 5 else ("Plan Estándar (30 días)" if days == 30 else "Plan Premium (3 meses)")
+            name_escaped = html.escape(name)
+            username_escaped = html.escape(username_str)
+            await msg.edit_text(
+                f"✅ <b>¡Cliente Autorizado con Éxito!</b>\n\n"
+                f"• <b>Nombre:</b> {name_escaped} ({username_escaped})\n"
+                f"• <b>ID:</b> <code>{target_uid}</code>\n"
+                f"• <b>Plan:</b> {plan_lbl}\n"
+                f"• <b>Rol:</b> Propietario (FlashTax)\n"
+                f"• <b>Vencimiento:</b> <code>{exp_date}</code>",
+                parse_mode="HTML"
+            )
+
+            try:
+                await context.bot.send_message(
+                    chat_id=int(target_uid),
+                    text=f"🎉 *¡Tu solicitud de acceso como Cliente ha sido aprobada!*\n\n"
+                         f"El administrador te ha concedido acceso con los siguientes detalles:\n\n"
+                         f"• *Plan:* {plan_lbl}\n"
+                         f"• *Vencimiento:* `{exp_date}`\n"
+                         f"• *Privilegios:* Propietario (FlashTax)\n\n"
                          f"Presiona /start para activar el menú y comenzar a usar el bot.",
                     parse_mode="Markdown",
                     reply_markup=_main_keyboard(target_uid)
@@ -8185,7 +8321,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(handle_share_email_callback, pattern=r"^share_email$"))
     app.add_handler(CallbackQueryHandler(handle_share_cancel_callback, pattern=r"^share_cancel$"))
     app.add_handler(CallbackQueryHandler(handle_ocr_callback, pattern=r"^ocr_"))
-    app.add_handler(CallbackQueryHandler(handle_user_request_access_callback, pattern=r"^user_request_access$"))
+    app.add_handler(CallbackQueryHandler(handle_user_request_access_callback, pattern=r"^user_request_access"))
     app.add_handler(CallbackQueryHandler(handle_cfg_company_callback, pattern=r"^cfg_company_"))
     app.add_handler(CallbackQueryHandler(handle_work_panel_callback, pattern=r"^work_panel:"))
     app.add_handler(CallbackQueryHandler(handle_history_callback, pattern=r"^history_"))
