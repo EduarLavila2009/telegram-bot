@@ -207,10 +207,9 @@ def _main_keyboard(user_id: int | str = "") -> ReplyKeyboardMarkup:
     if user_id:
         user = user_manager.get_user(user_id)
         if user:
-            if user.get("role") == "admin":
-                buttons.append([KeyboardButton(ADMIN_PANEL_BUTTON)])
-            elif user.get("role") == "nueva_empresa":
-                buttons.append([KeyboardButton("⚙️ Configurar Empresa")])
+            role = user.get("role")
+            if role in ("admin", "nueva_empresa"):
+                buttons.append([KeyboardButton("🚀 Menú de Inicio")])
             
     return ReplyKeyboardMarkup(
         keyboard=buttons,
@@ -424,10 +423,27 @@ def _check_permission(update: Update, module: str) -> bool:
     if role == "admin":
         return True
     if module == "tributos":
-        return role in ("full_access", "tributos_only")
+        return role in ("full_access", "tributos_only", "nueva_empresa")
     if module == "cotizaciones":
-        return role in ("full_access", "cotizaciones_only")
+        return role in ("full_access", "cotizaciones_only", "nueva_empresa")
     return False
+
+
+def _get_next_retencion_emitida_number_for_user(user_id: int | str, monthly_path: Path, emission_date: date) -> str:
+    user = user_manager.get_user(user_id)
+    config_correlative = user.get("last_correlative") if user else None
+    prefix = emission_date.strftime("%Y%m")
+    
+    max_seq_excel = excel_store.max_seq_retencion_emitida(monthly_path.parent, emission_date=emission_date)
+    max_seq_config = 0
+    if config_correlative and str(config_correlative).startswith(prefix):
+        seq_part = str(config_correlative)[len(prefix):]
+        if seq_part.isdigit():
+            max_seq_config = int(seq_part)
+            
+    max_seq = max(max_seq_excel, max_seq_config)
+    return f"{prefix}{max_seq + 1:08d}"
+
 
 
 async def _check_and_consume_quota(update: Update) -> bool:
@@ -871,7 +887,8 @@ async def _start_emitir_retencion_flow(
     base_total, iva_total, retenido = _totals_for_items(items)
     emission_date = date.today()
     monthly_path = _reten_emit_monthly_path(emission_date, update.effective_user.id)
-    next_num = excel_store.next_retencion_emitida_number(
+    next_num = _get_next_retencion_emitida_number_for_user(
+        update.effective_user.id,
         monthly_path,
         emission_date=emission_date,
     )
@@ -1813,6 +1830,31 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not _allowed(update) and not _is_sufevica_chat(update):
         logger.warning(f"Documento rechazado por falta de permisos (chat_id={msg.chat_id})")
         await _deny(update)
+        return
+
+    # Interceptar firma y sello para admin (cargar firma y sello)
+    if context.user_data.get("awaiting_admin_company_signature"):
+        target_uid = context.user_data.get("admin_edit_target_uid")
+        context.user_data.pop("awaiting_admin_company_signature", None)
+        context.user_data.pop("admin_edit_target_uid", None)
+        
+        ctx = CompanyContext(target_uid)
+        if not ctx.is_custom:
+            await msg.reply_text("❌ Solo las empresas personalizadas pueden subir firma y sello.")
+            return
+            
+        status_msg = await msg.reply_text("📥 *Guardando imagen de firma y sello del cliente...*", parse_mode="Markdown")
+        try:
+            tg_file = await context.bot.get_file(msg.document.file_id)
+            target_path = ctx.dir_path / "firma_sello_transparente.png"
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            await tg_file.download_to_drive(custom_path=str(target_path))
+            await status_msg.edit_text(f"✅ *Firma y Sello del cliente actualizados con éxito!*", parse_mode="Markdown")
+            await _show_admin_user_detail(update, context, target_uid)
+        except Exception as e:
+            logger.error(f"Error al guardar firma y sello de cliente desde documento: {e}")
+            await status_msg.edit_text(f"❌ *Error al guardar la firma y sello de cliente:* `{e}`", parse_mode="Markdown")
+            await _show_admin_user_detail(update, context, target_uid)
         return
 
     # Interceptar firma y sello
@@ -3055,7 +3097,8 @@ async def _emitir_retencion_generate(
             )
             return
     else:
-        num_comp = excel_store.next_retencion_emitida_number(
+        num_comp = _get_next_retencion_emitida_number_for_user(
+            update.effective_user.id,
             monthly_path,
             emission_date=emission_date,
         )
@@ -3167,7 +3210,8 @@ async def handle_emit_retention_callback(
         if emission_date is None:
             emission_date = date.today()
         monthly_path = _reten_emit_monthly_path(emission_date, update.effective_user.id)
-        next_num = excel_store.next_retencion_emitida_number(
+        next_num = _get_next_retencion_emitida_number_for_user(
+            update.effective_user.id,
             monthly_path,
             emission_date=emission_date,
         )
@@ -3228,6 +3272,81 @@ async def mi_id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
 
+async def _show_startup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, msg_to_edit=None) -> None:
+    u = update.effective_user
+    if u is None:
+        return
+    user = user_manager.get_user(u.id)
+    if not user:
+        return
+    
+    role = user.get("role")
+    kb_list = []
+    
+    if role == "admin":
+        kb_list.append([InlineKeyboardButton("🏢 Operar SUFEVICA", callback_data="work_panel:sufevica")])
+        kb_list.append([InlineKeyboardButton("👥 Administrar Clientes", callback_data="work_panel:admin_clients")])
+        welcome_text = "🚀 *Menú de Inicio - Panel de Control* 🚀\n\nBienvenido, Administrador. Selecciona tu panel de trabajo:"
+    elif role == "nueva_empresa":
+        kb_list.append([InlineKeyboardButton("🏢 Operar Mi Empresa", callback_data="work_panel:client_operate")])
+        kb_list.append([InlineKeyboardButton("⚙️ Configurar Empresa", callback_data="work_panel:client_config")])
+        welcome_text = "🚀 *Menú de Inicio - Cliente* 🚀\n\nBienvenido. Selecciona tu panel de trabajo:"
+    else:
+        kb_list.append([InlineKeyboardButton("🏢 Operar SUFEVICA", callback_data="work_panel:sufevica")])
+        welcome_text = "🚀 *Menú de Inicio* 🚀\n\nBienvenido. Presiona el botón de abajo para operar:"
+        
+    kb = InlineKeyboardMarkup(kb_list)
+    
+    if msg_to_edit:
+        await msg_to_edit.edit_text(welcome_text, reply_markup=kb, parse_mode="Markdown")
+    else:
+        msg = update.effective_message
+        if msg:
+            await msg.reply_text(welcome_text, reply_markup=kb, parse_mode="Markdown")
+
+
+async def handle_work_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    q = update.callback_query
+    if not q:
+        return
+    await q.answer()
+    data = q.data
+    msg = q.message
+    if not msg:
+        return
+        
+    parts = data.split(":")
+    action = parts[1]
+    
+    uid = update.effective_user.id
+    user = user_manager.get_user(uid)
+    if not user:
+        return
+        
+    if action == "sufevica":
+        await q.delete_message()
+        await context.bot.send_message(
+            chat_id=msg.chat_id,
+            text="🏢 *Módulo SUFEVICA Activo*\n\nOperando bajo el contexto de SUFEVICA. Utiliza el teclado inferior para navegar:",
+            reply_markup=_main_keyboard(uid),
+            parse_mode="Markdown"
+        )
+    elif action == "admin_clients":
+        await _show_admin_panel(update, context, msg_to_edit=msg)
+    elif action == "client_operate":
+        await q.delete_message()
+        await context.bot.send_message(
+            chat_id=msg.chat_id,
+            text="🏢 *Módulo de Operaciones Activo*\n\nOperando bajo el contexto de tu empresa. Utiliza el teclado inferior para navegar:",
+            reply_markup=_main_keyboard(uid),
+            parse_mode="Markdown"
+        )
+    elif action == "client_config":
+        await _show_company_config_menu(update, context, msg_to_edit=msg)
+    elif action == "start":
+        await _show_startup_menu(update, context, msg_to_edit=msg)
+
+
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if context.args and context.args[0] == "solicitar":
         await _handle_solicitar_access_flow(update, context)
@@ -3244,12 +3363,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("admin_new_user", None)
     context.user_data.pop("share_doc", None)
     if update.message:
-        await update.message.reply_text(
-            "🏛️ *Bot Financiero* 🏛️\n\n"
-            "Bienvenido. Selecciona una opción del menú de abajo para comenzar:",
-            reply_markup=_main_keyboard(update.effective_user.id),
-            parse_mode="Markdown"
-        )
+        await _show_startup_menu(update, context)
 
 
 def _process_parsed_ocr_invoice(fc: object) -> dict:
@@ -3346,6 +3460,80 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await _deny(update)
         return
     if not msg.photo:
+        return
+
+    # Interceptar RIF para admin (escanear RIF)
+    if context.user_data.get("awaiting_admin_rif_photo"):
+        target_uid = context.user_data.get("admin_edit_target_uid")
+        context.user_data.pop("awaiting_admin_rif_photo", None)
+        context.user_data.pop("admin_edit_target_uid", None)
+        
+        status_msg = await msg.reply_text("⏳ *Procesando imagen del RIF con Gemini...*", parse_mode="Markdown")
+        try:
+            photo = msg.photo[-1]
+            tg_file = await context.bot.get_file(photo.file_id)
+            img_data = await tg_file.download_as_bytearray()
+            from PIL import Image
+            import io
+            image = Image.open(io.BytesIO(img_data))
+            
+            from . import ocr_extract
+            rif_data = ocr_extract.extract_rif_data_from_image(image)
+            
+            razon_social = rif_data.get("razon_social", "").strip()
+            rif_val = rif_data.get("rif", "").strip().upper()
+            
+            if not rif_val or not razon_social:
+                await status_msg.edit_text("❌ No se pudo extraer la Razón Social o el RIF de la imagen. Por favor, ingrésalos manualmente.")
+                await _show_admin_user_detail(update, context, target_uid)
+                return
+                
+            # Validate RIF
+            if not tributario_engine.validar_rif_venezolano(rif_val):
+                await status_msg.edit_text(f"❌ RIF extraído (`{rif_val}`) no es válido. Edítalo manualmente.")
+                await _show_admin_user_detail(update, context, target_uid)
+                return
+                
+            user_manager.update_user_field(target_uid, "company_rif", rif_val)
+            user_manager.update_user_field(target_uid, "company_name", razon_social)
+            
+            await status_msg.edit_text(
+                f"✅ *RIF Escaneado y Configurado!*\n\n"
+                f"• *Razón Social:* `{razon_social}`\n"
+                f"• *RIF:* `{rif_val}`",
+                parse_mode="Markdown"
+            )
+            await _show_admin_user_detail(update, context, target_uid)
+        except Exception as e:
+            logger.error(f"Error al procesar RIF desde foto: {e}")
+            await status_msg.edit_text(f"❌ *Error al escanear RIF:* `{e}`", parse_mode="Markdown")
+            await _show_admin_user_detail(update, context, target_uid)
+        return
+
+    # Interceptar firma y sello para admin (cargar firma y sello)
+    if context.user_data.get("awaiting_admin_company_signature"):
+        target_uid = context.user_data.get("admin_edit_target_uid")
+        context.user_data.pop("awaiting_admin_company_signature", None)
+        context.user_data.pop("admin_edit_target_uid", None)
+        
+        ctx = CompanyContext(target_uid)
+        if not ctx.is_custom:
+            await msg.reply_text("❌ Solo las empresas personalizadas pueden subir firma y sello.")
+            return
+            
+        status_msg = await msg.reply_text("📥 *Guardando imagen de firma y sello del cliente...*", parse_mode="Markdown")
+        try:
+            photo = msg.photo[-1]
+            tg_file = await context.bot.get_file(photo.file_id)
+            target_path = ctx.dir_path / "firma_sello_transparente.png"
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            await tg_file.download_to_drive(custom_path=str(target_path))
+            await status_msg.edit_text(f"✅ *Firma y Sello del cliente actualizados con éxito!*", parse_mode="Markdown")
+            await _show_admin_user_detail(update, context, target_uid)
+        except Exception as e:
+            logger.error(f"Error al guardar firma y sello de cliente desde foto: {e}")
+            await status_msg.edit_text(f"❌ *Error al guardar la firma y sello de cliente:* `{e}`", parse_mode="Markdown")
+            await _show_admin_user_detail(update, context, target_uid)
         return
 
     # Interceptar firma y sello
@@ -4355,7 +4543,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             context.user_data["admin_state"] = "awaiting_new_user_name"
             await msg.reply_text(
                 f"ID de Telegram guardado: `{input_val}`.\n\n"
-                "Ahora escribe el *Nombre / Descripción* de este usuario (ej: `Carlos Gómez` o `Empresa ABC`):",
+                "Ahora escribe el *Nombre / Descripción* de este cliente (ej: `Carlos Gómez` o `Empresa ABC`):",
                 parse_mode="Markdown"
             )
             return
@@ -4366,6 +4554,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             context.user_data.pop("admin_state", None)
             
             kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏢 Cliente (FlashTax)", callback_data="admin_new_role:nueva_empresa")],
                 [InlineKeyboardButton("🏛️ Tributos Only", callback_data="admin_new_role:tributos_only")],
                 [InlineKeyboardButton("📋 Cotizaciones Only", callback_data="admin_new_role:cotizaciones_only")],
                 [InlineKeyboardButton("⭐ Acceso Total", callback_data="admin_new_role:full_access")],
@@ -4373,10 +4562,48 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             ])
             await msg.reply_text(
                 f"Nombre guardado: *{input_val}*\n\n"
-                "🛡️ Selecciona el *Rol* para el usuario:",
+                "🛡️ Selecciona el *Rol* para el cliente:",
                 reply_markup=kb,
                 parse_mode="Markdown"
             )
+            return
+
+        elif admin_state == "awaiting_admin_field_edit":
+            target_uid = context.user_data.get("admin_edit_target_uid")
+            field = context.user_data.get("admin_edit_field")
+            val = text.strip()
+            
+            if field == "company_rif":
+                new_rif = val.upper()
+                if not tributario_engine.validar_rif_venezolano(new_rif):
+                    await msg.reply_text(
+                        "❌ *RIF Inválido*\n\n"
+                        "El RIF ingresado no es válido de acuerdo a las especificaciones del SENIAT (ej: `J-40194130-3`).\n"
+                        "Por favor, verifícalo e ingresa un RIF correcto o envía /start para cancelar:",
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data=f"admin_edit:{target_uid}")]])
+                    )
+                    return
+                val = new_rif
+                
+            elif field == "last_correlative":
+                if not (len(val) == 14 and val.isdigit()):
+                    await msg.reply_text(
+                        "❌ *Correlativo Inválido*\n\n"
+                        "El correlativo debe ser un número de 14 dígitos (ej: `20260600000000`).\n"
+                        "Por favor, verifícalo e ingrésalo correctamente o envía /start para cancelar:",
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data=f"admin_edit:{target_uid}")]])
+                    )
+                    return
+
+            user_manager.update_user_field(target_uid, field, val)
+            context.user_data.pop("admin_state", None)
+            context.user_data.pop("admin_edit_target_uid", None)
+            context.user_data.pop("admin_edit_field", None)
+            
+            await msg.reply_text(f"✅ Campo actualizado con éxito.", parse_mode="Markdown")
+            await _show_admin_user_detail(update, context, target_uid)
             return
 
     # Interceptar entrada de texto del botón "Generar Retención"
@@ -4394,12 +4621,24 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     # Botones principales e interactivos
-    if text == ADMIN_PANEL_BUTTON:
+    if text == "🚀 Menú de Inicio":
+        await _show_startup_menu(update, context)
+        return
+
+    elif text == ADMIN_PANEL_BUTTON:
         user = user_manager.get_user(update.effective_user.id)
         if user and user.get("role") == "admin":
             await _show_admin_panel(update, context)
         else:
             await msg.reply_text("❌ No tienes privilegios para acceder al Panel de Administración.")
+        return
+
+    elif text == "⚙️ Configurar Empresa":
+        user = user_manager.get_user(update.effective_user.id)
+        if user and user.get("role") == "nueva_empresa":
+            await _show_company_config_menu(update, context)
+        else:
+            await msg.reply_text("❌ Esta opción solo está disponible para usuarios con privilegios de Empresa (FlashTax).")
         return
 
     elif text == TRIBUTOS_BUTTON:
@@ -5891,7 +6130,7 @@ async def _show_company_config_menu(update: Update, context: ContextTypes.DEFAUL
         [InlineKeyboardButton("📞 Modificar Teléfono", callback_data="cfg_company_phone")],
         [InlineKeyboardButton("📍 Modificar Dirección Fiscal", callback_data="cfg_company_address")],
         [InlineKeyboardButton("✍️ Subir Firma y Sello", callback_data="cfg_company_signature")],
-        [InlineKeyboardButton("❌ Cerrar Configuración", callback_data="cfg_company_close")]
+        [InlineKeyboardButton("🔙 Volver al Inicio", callback_data="cfg_company_close")]
     ])
 
     if msg_to_edit:
@@ -5924,11 +6163,7 @@ async def handle_cfg_company_callback(update: Update, context: ContextTypes.DEFA
     context.user_data.pop("awaiting_company_signature", None)
 
     if data == "cfg_company_close":
-        await msg.delete()
-        await msg.reply_text(
-            "Configuración cerrada.",
-            reply_markup=_main_keyboard(user_id)
-        )
+        await _show_startup_menu(update, context, msg_to_edit=msg)
         return
 
     elif data == "cfg_company_type":
@@ -7115,19 +7350,119 @@ async def handle_tributos_callback(
 
 async def _show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, msg_to_edit=None) -> None:
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("👥 Listar Usuarios", callback_data="admin_list")],
-        [InlineKeyboardButton("➕ Registrar Usuario", callback_data="admin_new_start")],
-        [InlineKeyboardButton("❌ Cerrar Panel", callback_data="admin_close")]
+        [InlineKeyboardButton("👥 Listar Clientes", callback_data="admin_list")],
+        [InlineKeyboardButton("➕ Registrar Cliente", callback_data="admin_new_start")],
+        [InlineKeyboardButton("🔙 Volver al Inicio", callback_data="work_panel:start")]
     ])
     bot_username = context.bot.username
     request_link = f"https://t.me/{bot_username}?start=solicitar"
     
     text = (
-        "⚙️ *Panel de Administración*\n\n"
+        "⚙️ *Panel de Administración de Clientes*\n\n"
         "Selecciona una opción para gestionar suscripciones, roles y cuotas de uso:\n\n"
         f"🔗 *Enlace directo de solicitud:*\n`{request_link}`"
     )
     
+    if msg_to_edit:
+        await msg_to_edit.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    else:
+        await update.effective_message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+
+
+async def _show_admin_user_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, uid: str, msg_to_edit=None) -> None:
+    u_info = user_manager.get_user(uid)
+    if not u_info:
+        err_text = "Usuario no encontrado."
+        err_kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver al Listado", callback_data="admin_list")]])
+        if msg_to_edit:
+            await msg_to_edit.edit_text(err_text, reply_markup=err_kb)
+        else:
+            await update.effective_message.reply_text(err_text, reply_markup=err_kb)
+        return
+
+    # Detail Text Formatting
+    status_emoji = "🟢" if u_info.get("status") == "active" else "🔴"
+    status_lbl = "APROBADO" if u_info.get("status") == "active" else "BLOQUEADO"
+    
+    # Persistent registration date
+    reg_date = u_info.get("registration_date")
+    if not reg_date:
+        reg_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        user_manager.update_user_field(uid, "registration_date", reg_date)
+
+    role = u_info.get("role")
+    if role == "admin":
+        role_lbl = "Administrador"
+    elif role == "nueva_empresa":
+        role_lbl = "Propietario (Analistas: Ninguno)"
+    elif role == "tributos_only":
+        role_lbl = "Tributos Only"
+    elif role == "cotizaciones_only":
+        role_lbl = "Cotizaciones Only"
+    else:
+        role_lbl = "Acceso Total"
+
+    limit_ops = u_info.get("limit_ops", -1)
+    if limit_ops == -1:
+        plan_lbl = "Plan Premium (3 meses)"
+    else:
+        plan_lbl = f"Plan Estándar ({limit_ops} ops)"
+
+    exp_date = u_info.get("expiration_date", "never")
+    exp_lbl = exp_date if exp_date != "never" else "Sin Límite"
+
+    company_name = u_info.get("company_name", "(sin configurar)")
+    company_rif = u_info.get("company_rif", "(sin configurar)")
+    company_address = u_info.get("company_address", "(sin configurar)")
+    company_phone = u_info.get("company_phone", "(sin configurar)")
+    
+    # Resolve actual last correlativo dynamically
+    prefix = datetime.now().strftime("%Y%m")
+    monthly_path = _reten_emit_monthly_path(date.today(), uid)
+    max_seq_excel = excel_store.max_seq_retencion_emitida(monthly_path.parent, emission_date=date.today())
+    
+    max_seq_config = 0
+    config_correlative = u_info.get("last_correlative", "20260600000000")
+    if config_correlative and str(config_correlative).startswith(prefix):
+        seq_part = str(config_correlative)[len(prefix):]
+        if seq_part.isdigit():
+            max_seq_config = int(seq_part)
+            
+    max_seq = max(max_seq_excel, max_seq_config)
+    last_correlative = f"{prefix}{max_seq:08d}"
+
+    text = (
+        f"Nombre: {u_info.get('name')} ({u_info.get('company_email') or 'sin correo'})\n"
+        f"ID: `{uid}`\n"
+        f"Estado: {status_emoji} *{status_lbl}*\n"
+        f"Registrado: {reg_date}\n"
+        f"👥 *Rol:* {role_lbl}\n"
+        f"✅ *Membresía:* {plan_lbl}\n"
+        f"📅 *Vence:* {exp_lbl}\n\n"
+        f"🏢 *Agente:* {company_name}\n"
+        f"🔹 *RIF:* `{company_rif}`\n"
+        f"📍 *Dirección:* {company_address}\n"
+        f"📞 *Teléfono:* `{company_phone}`\n"
+        f"🔢 *Último correlativo:* `{last_correlative}`"
+    )
+
+    status_btn_text = "🚫 BLOQUEAR CLIENTE" if u_info.get("status") == "active" else "🟢 DESBLOQUEAR CLIENTE"
+
+    kb_list = [
+        [InlineKeyboardButton(status_btn_text, callback_data=f"admin_edit_status:{uid}")],
+        [InlineKeyboardButton("💳 GESTIONAR SUSCRIPCIÓN", callback_data=f"admin_sub_menu:{uid}")],
+        [InlineKeyboardButton("✍️ EDITAR RAZÓN SOCIAL", callback_data=f"admin_edit_field:{uid}:company_name")],
+        [InlineKeyboardButton("✍️ EDITAR RIF", callback_data=f"admin_edit_field:{uid}:company_rif")],
+        [InlineKeyboardButton("✍️ EDITAR DIRECCIÓN", callback_data=f"admin_edit_field:{uid}:company_address")],
+        [InlineKeyboardButton("✍️ EDITAR TELÉFONO", callback_data=f"admin_edit_field:{uid}:company_phone")],
+        [InlineKeyboardButton("📸 ESCANEAR RIF (FOTO)", callback_data=f"admin_scan_rif:{uid}")],
+        [InlineKeyboardButton("🖊️ CARGAR FIRMA Y SELLO", callback_data=f"admin_upload_sig:{uid}")],
+        [InlineKeyboardButton("🔢 GESTIONAR CORRELATIVOS", callback_data=f"admin_edit_field:{uid}:last_correlative")],
+        [InlineKeyboardButton("🔍 REENVIAR COMPROBANTE", callback_data=f"admin_resend_auth:{uid}")],
+        [InlineKeyboardButton("🔙 VOLVER A CLIENTES", callback_data="admin_list")]
+    ]
+
+    kb = InlineKeyboardMarkup(kb_list)
     if msg_to_edit:
         await msg_to_edit.edit_text(text, reply_markup=kb, parse_mode="Markdown")
     else:
@@ -7295,38 +7630,84 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         
     elif data.startswith("admin_edit:"):
         uid = data.split(":")[1]
-        u_info = user_manager.get_user(uid)
-        if not u_info:
-            await msg.edit_text("Usuario no encontrado.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Volver al Listado", callback_data="admin_list")]]))
-            return
-            
-        status_lbl = "Activo ✅" if u_info.get("status") == "active" else "Suspendido 🚫"
-        limit_lbl = "Ilimitado" if u_info.get("limit_ops", -1) == -1 else f"{u_info.get('limit_ops')}"
-        
-        text = (
-            f"👤 *Gestión de Usuario*\n\n"
-            f"• *Nombre:* {u_info.get('name')}\n"
-            f"• *ID Telegram:* `{uid}`\n"
-            f"• *Rol:* `{u_info.get('role')}`\n"
-            f"• *Estado:* {status_lbl}\n"
-            f"• *Vencimiento:* `{u_info.get('expiration_date')}`\n"
-            f"• *Consumo:* `{u_info.get('consumed_ops', 0)} / {limit_lbl}` ops\n"
-        )
-        
-        is_self = str(uid) == str(user_id) or u_info.get("role") == "admin"
-        
-        kb_list = [
+        await _show_admin_user_detail(update, context, uid, msg_to_edit=msg)
+        return
+
+    elif data.startswith("admin_sub_menu:"):
+        uid = data.split(":")[1]
+        kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 Renovar plan / Duración", callback_data=f"admin_edit_dur:{uid}")],
             [InlineKeyboardButton("🛡️ Cambiar Rol", callback_data=f"admin_edit_role:{uid}")],
             [InlineKeyboardButton("📊 Modificar Cuota", callback_data=f"admin_edit_quota:{uid}")],
-        ]
+            [InlineKeyboardButton("🔙 Volver al Detalle", callback_data=f"admin_edit:{uid}")]
+        ])
+        await msg.edit_text("💳 *Gestión de Suscripción de Usuario*\n\nSeleccione el campo a modificar:", reply_markup=kb, parse_mode="Markdown")
+        return
+
+    elif data.startswith("admin_edit_field:"):
+        parts = data.split(":")
+        uid = parts[1]
+        field = parts[2]
+        field_lbl = "Razón Social" if field == "company_name" else ("RIF" if field == "company_rif" else "Dirección Fiscal" if field == "company_address" else "Teléfono" if field == "company_phone" else "Último Correlativo")
         
-        if not is_self:
-            status_btn_text = "🚫 Suspender Suscripción" if u_info.get("status") == "active" else "✅ Activar Suscripción"
-            kb_list.append([InlineKeyboardButton(status_btn_text, callback_data=f"admin_edit_status:{uid}")])
-            
-        kb_list.append([InlineKeyboardButton("🔙 Volver a la Lista", callback_data="admin_list")])
-        await msg.edit_text(text, reply_markup=InlineKeyboardMarkup(kb_list), parse_mode="Markdown")
+        context.user_data["admin_edit_target_uid"] = uid
+        context.user_data["admin_edit_field"] = field
+        context.user_data["admin_state"] = "awaiting_admin_field_edit"
+        
+        await msg.edit_text(
+            f"📝 *Editar {field_lbl}*\n\n"
+            f"Escribe el nuevo valor para {field_lbl}:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data=f"admin_edit:{uid}")]])
+        )
+        return
+
+    elif data.startswith("admin_scan_rif:"):
+        uid = data.split(":")[1]
+        context.user_data["admin_edit_target_uid"] = uid
+        context.user_data["admin_state"] = "awaiting_admin_rif_photo"
+        await msg.edit_text(
+            "📸 *Escanear RIF de Cliente*\n\n"
+            "Por favor, envía la *foto o imagen del RIF* del cliente para extraer la Razón Social y RIF usando Gemini:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data=f"admin_edit:{uid}")]])
+        )
+        return
+
+    elif data.startswith("admin_upload_sig:"):
+        uid = data.split(":")[1]
+        context.user_data["admin_edit_target_uid"] = uid
+        context.user_data["awaiting_admin_company_signature"] = True
+        await msg.edit_text(
+            "🖊️ *Cargar Firma y Sello de Cliente*\n\n"
+            "Por favor, envía la *imagen o archivo PDF/PNG* de la firma y sello del cliente:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data=f"admin_edit:{uid}")]])
+        )
+        return
+
+    elif data.startswith("admin_resend_auth:"):
+        uid = data.split(":")[1]
+        u_info = user_manager.get_user(uid)
+        if u_info:
+            role = u_info.get("role")
+            role_lbl = "Tributos Only" if role == "tributos_only" else ("Cotizaciones Only" if role == "cotizaciones_only" else "Nueva Empresa (FlashTax)" if role == "nueva_empresa" else "Acceso Total")
+            limit_ops = u_info.get("limit_ops", -1)
+            plan_lbl = "Plan Estándar (100 ops)" if limit_ops == 100 else "Plan Premium" if limit_ops == -1 else "Prueba"
+            exp_date = u_info.get("expiration_date", "never")
+            try:
+                await context.bot.send_message(
+                    chat_id=int(uid),
+                    text=f"🎉 *¡Tu suscripción y acceso al bot están activos!*\n\n"
+                         f"Detalles de tu cuenta:\n\n"
+                         f"• *Plan:* {plan_lbl}\n"
+                         f"• *Vencimiento:* `{exp_date}`\n"
+                         f"• *Privilegios:* {role_lbl}\n\n"
+                         f"Presiona /start para activar el menú y comenzar a usar el bot.",
+                    reply_markup=_main_keyboard(uid),
+                    parse_mode="Markdown"
+                )
+                await q.answer("✅ Comprobante reenviado con éxito al usuario.", show_alert=True)
+            except Exception as e:
+                logger.error(f"Error reenviando comprobante al usuario {uid}: {e}")
+                await q.answer(f"❌ Error al enviar mensaje: {e}", show_alert=True)
         return
         
     elif data.startswith("admin_edit_status:"):
@@ -7422,8 +7803,8 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data["admin_state"] = "awaiting_new_user_id"
         context.user_data["admin_new_user"] = {}
         await msg.edit_text(
-            "➕ *Registrar Nuevo Usuario*\n\n"
-            "Escribe el *ID de Telegram* del nuevo usuario (ej. `123456789`):",
+            "➕ *Registrar Nuevo Cliente*\n\n"
+            "Escribe el *ID de Telegram* del nuevo cliente (ej. `123456789`):",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancelar", callback_data="admin_main")]]),
             parse_mode="Markdown"
         )
@@ -7478,10 +7859,11 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data.pop("admin_state", None)
         context.user_data.pop("admin_new_user", None)
         
+        role_lbl = "Cliente (FlashTax)" if new_u['role'] == "nueva_empresa" else ("Tributos Only" if new_u['role'] == "tributos_only" else "Cotizaciones Only" if new_u['role'] == "cotizaciones_only" else "Acceso Total")
         await msg.edit_text(
-            f"✅ *Usuario `{new_u['name']}` registrado con éxito!*\n\n"
+            f"✅ *Cliente `{new_u['name']}` registrado con éxito!*\n\n"
             f"• ID: `{new_u['id']}`\n"
-            f"• Rol: `{new_u['role']}`\n"
+            f"• Rol: `{role_lbl}`\n"
             f"• Expiración: `{new_u['expiration_date']}`\n"
             f"• Límite ops: `{limit if limit != -1 else 'Ilimitado'}`",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Ir al Panel Principal", callback_data="admin_main")]]),
@@ -7805,6 +8187,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(handle_ocr_callback, pattern=r"^ocr_"))
     app.add_handler(CallbackQueryHandler(handle_user_request_access_callback, pattern=r"^user_request_access$"))
     app.add_handler(CallbackQueryHandler(handle_cfg_company_callback, pattern=r"^cfg_company_"))
+    app.add_handler(CallbackQueryHandler(handle_work_panel_callback, pattern=r"^work_panel:"))
     app.add_handler(CallbackQueryHandler(handle_history_callback, pattern=r"^history_"))
 
 

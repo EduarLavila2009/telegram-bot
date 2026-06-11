@@ -455,3 +455,35 @@ def parse_document_text_with_gemini(text: str) -> dict:
     except Exception as e:
         logger.error(f"Error al extraer datos de texto con Gemini: {e}")
         return {}
+
+
+def extract_rif_data_from_image(image: Image.Image) -> dict:
+    if not config.GEMINI_API_KEY:
+        raise RuntimeError("Falta GEMINI_API_KEY en .env.")
+
+    client = genai.Client(api_key=config.GEMINI_API_KEY)
+    image_bytes = _image_to_bytes(image)
+    
+    prompt = """
+    Analiza esta imagen del RIF (Registro de Información Fiscal) de Venezuela.
+    Extrae la Razón Social (nombre del contribuyente o empresa) y el RIF.
+    Devuelve UNICAMENTE un JSON válido con estas claves exactas:
+    - razon_social
+    - rif
+    
+    Reglas:
+    1) RIF debe tener el formato J-12345678-9 (o V-, G-, etc.).
+    2) Si no encuentras alguno de los campos, usa cadena vacía "".
+    3) No agregues texto explicativo fuera del JSON.
+    """
+    
+    response = _generate_content_with_retry(
+        client,
+        model=config.GEMINI_MODEL,
+        contents=[
+            prompt,
+            genai.types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+        ],
+    )
+    response_text = _safe_str(getattr(response, "text", ""))
+    return _extract_json_payload(response_text)
