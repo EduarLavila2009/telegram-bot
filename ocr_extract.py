@@ -151,8 +151,8 @@ Devuelve UNICAMENTE un JSON valido con estas claves exactas:
 
 Reglas:
 1) Moneda y Selección de Datos:
-   - Si la factura muestra montos tanto en Bolívares (VES/Bs.) como en Dólares (USD) (factura de doble columna o de pago referencial), DEBES extraer los montos en BOLÍVARES (Bs.) e indicar 'moneda_original': "VES". NO realices ninguna conversión matemática ni multiplicación por tasa de cambio.
-   - Solo si los montos están expresados única y exclusivamente en Dólares (USD) sin conversión alguna a Bolívares en el documento, extrae los montos en USD e indica 'moneda_original': "USD".
+   - Si la factura contiene montos expresados en Dólares (USD) (ya sea como moneda principal, en una columna de doble columna, o referenciales), y posee una tasa de cambio o tasa BCV anotada en la factura: DEBES extraer los montos en Dólares (USD), extraer la tasa de cambio en 'tasa_cambio', e indicar 'moneda_original': "USD". El bot se encargará de realizar matemáticamente la conversión exacta a Bolívares en base a esa tasa de cambio.
+   - Si los montos están expresados única y exclusivamente en Bolívares (VES/Bs.) sin mencionar dólares ni tasa de cambio referencial, extrae los montos en bolívares e indica 'moneda_original': "VES" y 'tasa_cambio': "".
 2) Formato de montos: numérico sin comas ni puntos de miles, utilizando el punto (.) como separador decimal (ej: 12500.50).
 3) Formato de tasa_cambio: si está presente, devuélvela como número decimal utilizando el punto como separador decimal (ej: 39.5858), NO elimines el punto o coma decimal original del valor.
 4) Si un dato no aparece, usa cadena vacia "".
@@ -183,7 +183,8 @@ Reglas:
 
 CLASSIFY_PROMPT = """
 Analiza esta imagen comercial y clasifícala en una de las siguientes categorías exactas:
-- "factura" (si es una factura de compra, nota de entrega, presupuesto, etc.)
+- "factura" (SI Y SOLO SI es una factura formal de compra o venta, o factura fiscal, NO nota de entrega ni presupuesto ni cotización)
+- "documento_comercial" (si es una nota de entrega, presupuesto, cotización, orden de compra o una captura de pantalla/imagen de tabla de Excel conteniendo productos o listado comercial)
 - "retencion_iva" (si es un comprobante de retención de IVA del SENIAT)
 - "retencion_islr" (si es un comprobante de retención de ISLR / Impuesto sobre la Renta)
 - "desconocido" (si es cualquier otra cosa)
@@ -206,7 +207,7 @@ def classify_image_type(image: Image.Image) -> str:
         ],
     )
     result = _safe_str(getattr(response, "text", "")).strip().lower()
-    for cat in ("factura", "retencion_iva", "retencion_islr"):
+    for cat in ("factura", "documento_comercial", "retencion_iva", "retencion_islr"):
         if cat in result:
             return cat
     return "desconocido"
@@ -356,14 +357,14 @@ def extract_product_query_from_image(image: Image.Image) -> str:
 
 DOCUMENT_PARSER_PROMPT = """
 Analiza esta imagen de una nota de entrega, cotización, factura o pedido.
-Extrae la información del cliente y la lista de todos los productos/ítems.
+Extrae la lista de todos los productos/ítems (código, descripción, cantidad, precio unitario).
 
 Devuelve UNICAMENTE un JSON válido con esta estructura exacta:
 {
-  "client_name": "nombre del cliente o razón social",
-  "client_rif": "RIF del cliente, ej: J-12345678-9",
-  "client_address": "dirección fiscal del cliente",
-  "client_phone": "teléfono del cliente",
+  "client_name": "",
+  "client_rif": "",
+  "client_address": "",
+  "client_phone": "",
   "items": [
     {
       "code": "código del producto si está visible",
@@ -375,7 +376,7 @@ Devuelve UNICAMENTE un JSON válido con esta estructura exacta:
 }
 
 Reglas:
-1) Si algún dato del cliente no es visible, usa cadena vacía "".
+1) Deja los campos "client_name", "client_rif", "client_address" y "client_phone" siempre vacíos como "".
 2) Para cada ítem, extrae la cantidad (qty) y precio unitario en USD (priceUsd). Si los montos están en Bolívares (Bs) y la tasa de cambio está visible, conviértelos a USD o mantén USD si el documento original los indica.
 3) Formato numérico para qty y priceUsd: numérico simple (ej: 5.0, 12.50) sin comas ni otros caracteres.
 4) No agregues texto explicativo o formato fuera del JSON.
@@ -408,14 +409,14 @@ def extract_document_data_from_image(image: Image.Image) -> dict:
 
 DOCUMENT_TEXT_PARSER_PROMPT = """
 Analiza este texto que contiene una solicitud de pedido, cotización, factura o nota de entrega.
-Extrae la información del cliente y la lista de todos los productos/ítems.
+Extrae la lista de todos los productos/ítems (código, descripción, cantidad, precio unitario).
 
 Devuelve UNICAMENTE un JSON válido con esta estructura exacta:
 {
-  "client_name": "nombre del cliente o razón social",
-  "client_rif": "RIF del cliente, ej: J-12345678-9",
-  "client_address": "dirección fiscal del cliente",
-  "client_phone": "teléfono del cliente",
+  "client_name": "",
+  "client_rif": "",
+  "client_address": "",
+  "client_phone": "",
   "items": [
     {
       "code": "código del producto si está visible o deducible",
@@ -427,7 +428,7 @@ Devuelve UNICAMENTE un JSON válido con esta estructura exacta:
 }
 
 Reglas:
-1) Si algún dato del cliente no está explícito o no se menciona, usa cadena vacía "".
+1) Deja los campos "client_name", "client_rif", "client_address" y "client_phone" siempre vacíos como "".
 2) Para cada ítem, extrae la cantidad (qty) y precio unitario en USD (priceUsd). Si los montos están en Bolívares (Bs) y la tasa de cambio está visible o implícita, conviértelos a USD o mantén USD si el original los indica.
 3) Formato numérico para qty y priceUsd: numérico simple (ej: 5.0, 12.50) sin comas ni otros caracteres.
 4) No agregues texto explicativo o formato fuera del JSON.

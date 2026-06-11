@@ -3431,11 +3431,29 @@ def _process_parsed_ocr_invoice(fc: object) -> dict:
     
     # Normalizar montos
     def _clean_val(v):
-        if not v:
+        if v is None:
             return Decimal("0.00")
+        if isinstance(v, (int, float)):
+            try:
+                return Decimal(str(v))
+            except Exception:
+                return Decimal("0.00")
+        s = str(v).strip()
+        if not s:
+            return Decimal("0.00")
+        # Clean currency prefixes like Bs., Bs, bs., bsf, ves, $, etc.
+        import re
+        s = re.sub(r'(?i)^(bsf\.?|bs\.?|ves\.?|usd\.?|\$)\s*', '', s)
+        s = s.replace(" ", "")
+        if re.search(r"\d+\.\d{3},\d{2}$", s) or (
+            "," in s and "." in s and s.rfind(",") > s.rfind(".")
+        ):
+            s = s.replace(".", "").replace(",", ".")
+        elif "," in s and "." not in s:
+            s = s.replace(",", ".")
+        s = re.sub(r"[^\d.\-]", "", s)
         try:
-            cleaned = str(v).replace(" ", "").replace(",", ".")
-            return Decimal(cleaned)
+            return Decimal(s)
         except Exception:
             return Decimal("0.00")
             
@@ -3924,6 +3942,28 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             context.user_data["pending_ocr_invoice"] = _process_parsed_ocr_invoice(fc)
             await _send_ocr_invoice_card(update, context, status_msg)
             
+        elif category == "documento_comercial":
+            saved_path = Path(tempfile.gettempdir()) / f"doc_{photo.file_id}.jpg"
+            import shutil
+            shutil.copy(tmp_path, saved_path)
+            context.user_data["pending_unknown_image"] = str(saved_path)
+            
+            kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("📋 Elaborar Cotización", callback_data="ocr_force_cotizacion"),
+                    InlineKeyboardButton("📦 Elaborar Nota de Entrega", callback_data="ocr_force_nota"),
+                ],
+                [
+                    InlineKeyboardButton("❌ Cancelar", callback_data="ocr_cancel_photo"),
+                ]
+            ])
+            await status_msg.edit_text(
+                "📋 *He detectado una Nota de Entrega, Cotización o Tabla de Excel.*\n\n"
+                "¿Qué tipo de documento deseas elaborar con esta imagen?",
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+            
         elif category == "retencion_iva":
             ret_iva = ocr_extract.extract_from_image(img)
             context.user_data["pending_ocr_ret_iva"] = {
@@ -4219,6 +4259,69 @@ async def handle_ocr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                 saved_path.unlink(missing_ok=True)
                 await _send_ocr_ret_islr_card(update, context, msg_to_edit=msg)
                 
+            elif force_type in ("cotizacion", "nota"):
+                extracted = ocr_extract.extract_document_data_from_image(img)
+                
+                # Keep client info empty as requested by user
+                client_info = {
+                    "name": "",
+                    "rif": "",
+                    "address": "",
+                    "phone": "",
+                    "salesman": "FREDDY LOPEZ",
+                    "saleType": "Contado",
+                    "note": ""
+                }
+                
+                items = []
+                for it in extracted.get("items", []):
+                    code = (it.get("code") or "").strip()
+                    desc = (it.get("desc") or "").strip()
+                    try:
+                        qty = float(it.get("qty") or 1.0)
+                    except Exception:
+                        qty = 1.0
+                    try:
+                        price = float(it.get("priceUsd") or 0.0)
+                    except Exception:
+                        price = 0.0
+                    items.append({
+                        "code": code,
+                        "desc": desc,
+                        "qty": qty,
+                        "priceUsd": price,
+                        "totalUsd": qty * price
+                    })
+                
+                if items:
+                    context.user_data["pending_doc"] = {
+                        "type": force_type,
+                        "awaiting": "edit_card",
+                        "parsed_data": {
+                            "docType": force_type,
+                            "currency": "usd",
+                            "exchangeRate": get_current_bcv_rate(),
+                            "docNumber": "",
+                            "docDate": date.today().strftime("%Y-%m-%d"),
+                            "client": client_info,
+                            "items": items
+                        }
+                    }
+                    context.user_data["active_menu"] = force_type
+                    context.user_data.pop("pending_unknown_image", None)
+                    saved_path.unlink(missing_ok=True)
+                    try:
+                        await msg.delete()
+                    except Exception:
+                        pass
+                    await _send_client_data_card(update, context, first_time=True)
+                else:
+                    await msg.edit_text(
+                        "⚠️ *No pude extraer productos válidos de la imagen.*\n\n"
+                        "Por favor asegúrate de que la foto de la cotización o tabla de Excel sea nítida.",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancelar", callback_data="ocr_cancel_photo")]])
+                    )
+                    
         except Exception as e:
             logger.exception("Error al forzar clasificación de foto")
             await msg.reply_text(f"❌ Error al procesar imagen forzada: {e!s}")
