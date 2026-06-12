@@ -1328,6 +1328,7 @@ async def _send_history_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton("📦 Notas de Entrega", callback_data="history_cat:nota")],
         [InlineKeyboardButton("✍️ Retenciones de IVA", callback_data="history_cat:retencion_iva")],
         [InlineKeyboardButton("🏛️ Retenciones de ISLR", callback_data="history_cat:retencion_islr")],
+        [InlineKeyboardButton("🔍 Reimprimir por Número", callback_data="history_reprint_manual")],
         [InlineKeyboardButton("❌ Cerrar", callback_data="history_close")]
     ])
     
@@ -1357,6 +1358,7 @@ async def handle_history_callback(update: Update, context: ContextTypes.DEFAULT_
             [InlineKeyboardButton("📦 Notas de Entrega", callback_data="history_cat:nota")],
             [InlineKeyboardButton("✍️ Retenciones de IVA", callback_data="history_cat:retencion_iva")],
             [InlineKeyboardButton("🏛️ Retenciones de ISLR", callback_data="history_cat:retencion_islr")],
+            [InlineKeyboardButton("🔍 Reimprimir por Número", callback_data="history_reprint_manual")],
             [InlineKeyboardButton("❌ Cerrar", callback_data="history_close")]
         ])
         await q.edit_message_text(
@@ -1519,7 +1521,55 @@ async def handle_history_callback(update: Update, context: ContextTypes.DEFAULT_
             parse_mode="Markdown"
         )
         
+    elif data == "history_reprint_manual":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 Cotización", callback_data="history_repman:cotizacion")],
+            [InlineKeyboardButton("📦 Nota de Entrega", callback_data="history_repman:nota")],
+            [InlineKeyboardButton("✍️ Retención de IVA", callback_data="history_repman:retencion_iva")],
+            [InlineKeyboardButton("🏛️ Retenciones de ISLR", callback_data="history_repman:retencion_islr")],
+            [InlineKeyboardButton("🔙 Volver", callback_data="history_menu")]
+        ])
+        await q.edit_message_text(
+            "🔍 *Reimprimir por Número*\n\n"
+            "Selecciona el tipo de documento que deseas buscar y reimprimir:",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        
+    elif data.startswith("history_repman:"):
+        doc_type = data.split(":", 1)[1]
+        context.user_data["awaiting_reprint_num"] = doc_type
+        
+        doc_names = {
+            "cotizacion": "Cotización",
+            "nota": "Nota de Entrega",
+            "retencion_iva": "Retención de IVA",
+            "retencion_islr": "Retención de ISLR"
+        }
+        doc_name = doc_names.get(doc_type, "Documento")
+        
+        sample_nums = {
+            "cotizacion": "000018",
+            "nota": "000018",
+            "retencion_iva": "20260600000381",
+            "retencion_islr": "20260600000002"
+        }
+        sample_num = sample_nums.get(doc_type, "18")
+        
+        try:
+            await q.delete_message()
+        except Exception:
+            pass
+            
+        await msg.reply_text(
+            f"✏️ *Reimpresión de {doc_name}*\n\n"
+            f"Envía por mensaje el número del documento que deseas reimprimir (ejemplo: `{sample_num}`):",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancelar", callback_data="history_menu")]])
+        )
+
     elif data == "history_close":
+        context.user_data.pop("awaiting_reprint_num", None)
         try:
             await msg.delete()
         except Exception:
@@ -4847,6 +4897,69 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
 
 
+def find_generated_document(generados_dir: Path, doc_type: str, user_input: str, ctx) -> Path | None:
+    import re
+    cleaned = re.sub(r"[^A-Za-z0-9]", "", user_input).strip()
+    if not cleaned:
+        return None
+    
+    # 1. Intentar buscar en historico_documentos.json
+    history = []
+    if ctx.historico_json_path.exists():
+        try:
+            import json
+            with open(ctx.historico_json_path, "r", encoding="utf-8") as f:
+                history = json.load(f)
+        except Exception:
+            pass
+            
+    for entry in history:
+        if entry.get("doc_type") == doc_type:
+            entry_num = re.sub(r"[^A-Za-z0-9]", "", str(entry.get("doc_number", ""))).strip()
+            if entry_num and (entry_num == cleaned or entry_num.lstrip("0") == cleaned.lstrip("0")):
+                pdf_filename = entry.get("pdf_filename")
+                if pdf_filename:
+                    path = generados_dir / pdf_filename
+                    if path.exists():
+                        return path
+
+    # 2. Fallback: Buscar usando patrones de coincidencia glob
+    patterns = []
+    if doc_type == "cotizacion":
+        patterns = [
+            f"COTIZACIÓN_{cleaned.zfill(6)}.pdf",
+            f"COTIZACIÓN_*{cleaned}*.pdf",
+            f"COTIZACION_*{cleaned}*.pdf",
+            f"*{cleaned}*.pdf"
+        ]
+    elif doc_type == "nota":
+        patterns = [
+            f"NOTA DE ENTREGA_{cleaned.zfill(6)}.pdf",
+            f"NOTA DE ENTREGA_*{cleaned}*.pdf",
+            f"*{cleaned}*.pdf"
+        ]
+    elif doc_type == "retencion_iva":
+        patterns = [
+            f"COMPROBANTE-RET-{cleaned}.pdf",
+            f"COMPROBANTE-RET-{cleaned}.xlsx",
+            f"COMPROBANTE-RET-*{cleaned}*.pdf",
+            f"COMPROBANTE-RET-*{cleaned}*.xlsx"
+        ]
+    elif doc_type == "retencion_islr":
+        patterns = [
+            f"COMPROBANTE_RETENCION_ISLR_{cleaned}.pdf",
+            f"COMPROBANTE_RETENCION_ISLR_*{cleaned}*.pdf",
+            f"*{cleaned}*.pdf"
+        ]
+
+    for pattern in patterns:
+        for filepath in generados_dir.glob(pattern):
+            if filepath.is_file():
+                return filepath
+                
+    return None
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if not msg:
@@ -4869,7 +4982,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         context.user_data.get("awaiting_company_next_nota") is not None or
         context.user_data.get("awaiting_emit_docs") is not None or
         context.user_data.get("admin_state") is not None or
-        context.user_data.get("share_doc") is not None
+        context.user_data.get("share_doc") is not None or
+        context.user_data.get("awaiting_reprint_num") is not None
     )
 
     # Procesar siempre publicaciones de canal y además chat SUFEVICA detectado, si no hay un flujo activo.
@@ -4891,6 +5005,41 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if "generar retencion" in normalized_text or "generar retención" in normalized_text or "emitir retencion" in normalized_text or "emitir retención" in normalized_text or text == SUBMENU_GENERAR_RETENCION:
             await msg.reply_text("⚠️ Opción Bloqueada: Los Contribuyentes Ordinarios no emiten comprobantes de retención de acuerdo con las normativas del SENIAT.")
             return
+
+    # Interceptar entradas de texto del usuario para reimpresión manual
+    if context.user_data.get("awaiting_reprint_num"):
+        doc_type = context.user_data.pop("awaiting_reprint_num")
+        user_input = text.strip()
+        
+        pdf_path = find_generated_document(ctx.generados_dir, doc_type, user_input, ctx)
+        if pdf_path and pdf_path.exists():
+            doc_names = {
+                "cotizacion": "Cotizacion",
+                "nota": "Nota_de_Entrega",
+                "retencion_iva": "Retencion_IVA",
+                "retencion_islr": "Retencion_ISLR"
+            }
+            doc_name = doc_names.get(doc_type, "Documento")
+            
+            await msg.reply_document(
+                document=str(pdf_path),
+                filename=f"{doc_name}_{user_input}.pdf" if doc_type != "retencion_iva" or pdf_path.suffix == ".pdf" else f"{doc_name}_{user_input}.xlsx",
+                caption=f"📄 *Reimpresión (Manual):* {doc_name} Nro {user_input}",
+                parse_mode="Markdown"
+            )
+        else:
+            doc_names_es = {
+                "cotizacion": "Cotización",
+                "nota": "Nota de Entrega",
+                "retencion_iva": "Retención de IVA",
+                "retencion_islr": "Retención de ISLR"
+            }
+            doc_name_es = doc_names_es.get(doc_type, "Documento")
+            await msg.reply_text(
+                f"❌ No encontré el archivo físico del documento de tipo *{doc_name_es}* con número `{user_input}` en el servidor.",
+                parse_mode="Markdown"
+            )
+        return
 
     # Interceptar entradas de texto del usuario para configuración de empresa (FlashTax)
     user_id = update.effective_user.id
