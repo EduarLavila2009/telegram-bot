@@ -1875,6 +1875,15 @@ async def check_and_sync_files(context: ContextTypes.DEFAULT_TYPE) -> None:
                 current_state[key] = new_file_id
                 _last_mtime_cache[key] = mtime
                 changed = True
+                
+                # Borrar el mensaje de respaldo del chat para no saturar la conversación
+                try:
+                    await context.bot.delete_message(
+                        chat_id=config.ALLOWED_USER_ID,
+                        message_id=sent_msg.message_id
+                    )
+                except Exception as del_err:
+                    logger.warning(f"No se pudo borrar el mensaje de respaldo: {del_err}")
             except Exception as e:
                 logger.error(f"Error subiendo respaldo de {filename}: {e}")
     if changed:
