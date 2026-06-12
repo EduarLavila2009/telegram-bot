@@ -3848,6 +3848,220 @@ def _process_parsed_ocr_invoice(fc: object) -> dict:
         "islr_concept": "Servicios en General (Jurídicos: 2%)" if alicuota_sugerida == Decimal("0.02") else "Honorarios Profesionales / Fletes (Jurídicos: 3%)" if alicuota_sugerida == Decimal("0.03") else "Publicidad, Propaganda y Comisiones (5%)" if alicuota_sugerida == Decimal("0.05") else "Compra de Mercancía / No sujeto"
     }
 
+def _process_parsed_ocr_sale(fc: object, ctx) -> dict:
+    from decimal import Decimal
+    from . import tributario_engine
+    
+    rif_valido = tributario_engine.validar_rif_venezolano(fc.receptor_rif)
+    moneda = (getattr(fc, "moneda_original", "VES") or "VES").strip().upper()
+    
+    def _clean_val(v):
+        if v is None:
+            return Decimal("0.00")
+        if isinstance(v, (int, float)):
+            try:
+                return Decimal(str(v))
+            except Exception:
+                return Decimal("0.00")
+        s = str(v).strip()
+        if not s:
+            return Decimal("0.00")
+        import re
+        s = re.sub(r'(?i)^(bsf\.?|bs\.?|ves\.?|usd\.?|\$)\s*', '', s)
+        s = s.replace(" ", "")
+        if re.search(r"\d+\.\d{3},\d{2}$", s) or (
+            "," in s and "." in s and s.rfind(",") > s.rfind(".")
+        ):
+            s = s.replace(".", "").replace(",", ".")
+        elif "," in s and "." not in s:
+            s = s.replace(",", ".")
+        s = re.sub(r"[^\d.\-]", "", s)
+        try:
+            return Decimal(s)
+        except Exception:
+            return Decimal("0.00")
+            
+    subtotal_val = _clean_val(fc.subtotal)
+    exento_val = _clean_val(fc.monto_exento)
+    base_val = _clean_val(fc.base_imponible)
+    iva_val = _clean_val(fc.monto_iva)
+    total_val = _clean_val(fc.total)
+    
+    tasa_usada = fc.tasa_cambio
+    
+    if moneda == "USD":
+        rate = Decimal("0.00")
+        if fc.tasa_cambio:
+            try:
+                rate = Decimal(str(fc.tasa_cambio).replace(",", "."))
+            except Exception:
+                pass
+        if rate <= 0:
+            try:
+                rate = Decimal(str(get_current_bcv_rate()))
+            except Exception:
+                rate = Decimal("39.50")
+        
+        tasa_usada = f"{rate:.4f}"
+        subtotal_val = (subtotal_val * rate).quantize(Decimal("0.01"))
+        exento_val = (exento_val * rate).quantize(Decimal("0.01"))
+        base_val = (base_val * rate).quantize(Decimal("0.01"))
+        iva_val = (iva_val * rate).quantize(Decimal("0.01"))
+        total_val = (total_val * rate).quantize(Decimal("0.01"))
+    
+    tipo_doc = "Factura"
+    tipo_lower = str(fc.tipo_documento).lower()
+    if "credito" in tipo_lower or "crédito" in tipo_lower:
+        tipo_doc = "Nota de Credito"
+    elif "debito" in tipo_lower or "débito" in tipo_lower:
+        tipo_doc = "Nota de Debito"
+        
+    return {
+        "clasificacion": tipo_doc,
+        "fecha_emision": fc.fecha_emision,
+        "numero_documento": fc.numero_documento,
+        "numero_control": fc.numero_control,
+        "proveedor": fc.proveedor or ctx.company_name,
+        "proveedor_rif": fc.proveedor_rif or ctx.company_rif,
+        "receptor": fc.receptor,
+        "receptor_rif": fc.receptor_rif,
+        "subtotal": f"{subtotal_val:.2f}",
+        "monto_exento": f"{exento_val:.2f}",
+        "base_imponible": f"{base_val:.2f}",
+        "monto_iva": f"{iva_val:.2f}",
+        "total": f"{total_val:.2f}",
+        "tasa_cambio": tasa_usada,
+        "rif_valido": rif_valido,
+    }
+
+def _process_parsed_ocr_reporte_z(z_data: dict) -> dict:
+    from decimal import Decimal
+    
+    def _clean_val(v):
+        if v is None:
+            return Decimal("0.00")
+        if isinstance(v, (int, float)):
+            try:
+                return Decimal(str(v))
+            except Exception:
+                return Decimal("0.00")
+        s = str(v).strip()
+        if not s:
+            return Decimal("0.00")
+        import re
+        s = re.sub(r'(?i)^(bsf\.?|bs\.?|ves\.?|usd\.?|\$)\s*', '', s)
+        s = s.replace(" ", "")
+        if re.search(r"\d+\.\d{3},\d{2}$", s) or (
+            "," in s and "." in s and s.rfind(",") > s.rfind(".")
+        ):
+            s = s.replace(".", "").replace(",", ".")
+        elif "," in s and "." not in s:
+            s = s.replace(",", ".")
+        s = re.sub(r"[^\d.\-]", "", s)
+        try:
+            return Decimal(s)
+        except Exception:
+            return Decimal("0.00")
+            
+    subtotal_val = _clean_val(z_data.get("sub_total"))
+    exento_val = _clean_val(z_data.get("monto_exento"))
+    base_val = _clean_val(z_data.get("base_imponible"))
+    iva_val = _clean_val(z_data.get("iva"))
+    total_val = _clean_val(z_data.get("total"))
+    
+    if base_val > 0 and iva_val == 0:
+        iva_val = (base_val * Decimal("0.16")).quantize(Decimal("0.01"))
+    if total_val == 0:
+        total_val = subtotal_val + iva_val
+    if subtotal_val == 0:
+        subtotal_val = base_val + exento_val
+        
+    return {
+        "numero_reporte": z_data.get("numero_reporte"),
+        "fecha_emision": z_data.get("fecha_emision"),
+        "sub_total": f"{subtotal_val:.2f}",
+        "base_imponible": f"{base_val:.2f}",
+        "monto_exento": f"{exento_val:.2f}",
+        "iva": f"{iva_val:.2f}",
+        "total": f"{total_val:.2f}",
+    }
+
+async def _send_ocr_reporte_z_card(update: Update, context: ContextTypes.DEFAULT_TYPE, msg_to_edit=None) -> None:
+    pending = context.user_data.get("pending_ocr_reporte_z")
+    if not pending:
+        return
+        
+    text = (
+        f"📊 *REPORTE Z EXTRAÍDO* 📊\n\n"
+        f"🔢 *Reporte Nro:* `{pending['numero_reporte'] or '—'}`\n"
+        f"📅 *Fecha Emisión:* {pending['fecha_emision'] or '—'}\n\n"
+        f"-----------------------------------------\n"
+        f"💵 *Subtotal:* {pending['sub_total']} Bs\n"
+        f"ex *Monto Exento:* {pending['monto_exento']} Bs\n"
+        f"💰 *Base Imponible:* {pending['base_imponible']} Bs\n"
+        f"⚡ *IVA (16%):* {pending['iva']} Bs\n"
+        f"💸 *Total Reportado:* {pending['total']} Bs\n\n"
+        f"👇 *¿Deseas registrar este Reporte Z de ventas diarias?*"
+    )
+    
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Confirmar y Guardar", callback_data="ocr_confirm_reporte_z"),
+            InlineKeyboardButton("❌ Cancelar", callback_data="ocr_cancel_photo")
+        ]
+    ])
+    
+    if msg_to_edit:
+        await msg_to_edit.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    else:
+        msg = update.effective_message
+        if msg:
+            await msg.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+
+async def _send_ocr_sale_card(update: Update, context: ContextTypes.DEFAULT_TYPE, msg_to_edit=None) -> None:
+    pending = context.user_data.get("pending_ocr_sale")
+    if not pending:
+        return
+        
+    rif_status = "✅ Válido" if pending["rif_valido"] else "❌ INVÁLIDO (Módulo 11)"
+    tipo_doc_desc = "FACTURA EMITIDA (VENTA)" if pending["clasificacion"] == "Factura" else "NOTA DE CRÉDITO EMITIDA" if pending["clasificacion"] == "Nota de Credito" else "NOTA DE DÉBITO EMITIDA"
+    
+    text = (
+        f"📈 *{tipo_doc_desc} EXTRAÍDA* 📈\n\n"
+        f"👤 *Cliente:* {pending['receptor'] or '—'}\n"
+        f"🆔 *RIF Cliente:* `{pending['receptor_rif'] or '—'}` ({rif_status})\n"
+        f"📅 *Fecha Emisión:* {pending['fecha_emision'] or '—'}\n"
+        f"🔢 *Documento Nro:* `{pending['numero_documento'] or '—'}`\n"
+        f"🎛️ *Nro Control:* `{pending['numero_control'] or '—'}`\n\n"
+        f"-----------------------------------------\n"
+        f"💵 *Subtotal:* {pending['subtotal'] or '0.00'} Bs\n"
+        f"ex *Monto Exento:* {pending['monto_exento'] or '0.00'} Bs\n"
+        f"💰 *Base Imponible:* {pending['base_imponible'] or '0.00'} Bs\n"
+        f"⚡ *IVA (16%):* {pending['monto_iva'] or '0.00'} Bs\n"
+        f"💸 *Total General:* {pending['total'] or '0.00'} Bs\n"
+    )
+    if pending['tasa_cambio']:
+        text += f"💱 *Tasa Cambio:* {pending['tasa_cambio']} Bs/$\n"
+        
+    text += (
+        f"-----------------------------------------\n"
+        f"👇 *Confirma para guardar este registro de ventas:*"
+    )
+    
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Confirmar y Guardar", callback_data="ocr_confirm_sale"),
+            InlineKeyboardButton("❌ Cancelar", callback_data="ocr_cancel_photo")
+        ]
+    ])
+    
+    if msg_to_edit:
+        await msg_to_edit.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+    else:
+        msg = update.effective_message
+        if msg:
+            await msg.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
@@ -4269,10 +4483,46 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         category = ocr_extract.classify_image_type(img)
         logger.info("Imagen clasificada como: %s", category)
         
-        if category == "factura":
+        tributos_mode = context.user_data.get("tributos_mode")
+        ctx = _get_company_context(update)
+        
+        def _normalize_rif_simple(r: str) -> str:
+            if not r:
+                return ""
+            import re
+            return re.sub(r"[^A-Z0-9]", "", str(r).upper().strip())
+            
+        company_rif_clean = _normalize_rif_simple(ctx.company_rif)
+        
+        if category in ("factura", "nota_credito"):
             fc = ocr_extract.extract_invoice_from_image(img)
-            context.user_data["pending_ocr_invoice"] = _process_parsed_ocr_invoice(fc)
-            await _send_ocr_invoice_card(update, context, status_msg)
+            
+            # Determinar de forma inteligente si es venta o compra
+            is_sale = False
+            prov_rif_clean = _normalize_rif_simple(fc.proveedor_rif)
+            rec_rif_clean = _normalize_rif_simple(fc.receptor_rif)
+            
+            if prov_rif_clean and prov_rif_clean == company_rif_clean:
+                is_sale = True
+            elif rec_rif_clean and rec_rif_clean == company_rif_clean:
+                is_sale = False
+            else:
+                if tributos_mode == "venta":
+                    is_sale = True
+                else:
+                    is_sale = False
+                    
+            if is_sale:
+                context.user_data["pending_ocr_sale"] = _process_parsed_ocr_sale(fc, ctx)
+                await _send_ocr_sale_card(update, context, status_msg)
+            else:
+                context.user_data["pending_ocr_invoice"] = _process_parsed_ocr_invoice(fc)
+                await _send_ocr_invoice_card(update, context, status_msg)
+                
+        elif category == "reporte_z" or tributos_mode == "reporte_z":
+            z_data = ocr_extract.extract_reporte_z_from_image(img)
+            context.user_data["pending_ocr_reporte_z"] = _process_parsed_ocr_reporte_z(z_data)
+            await _send_ocr_reporte_z_card(update, context, status_msg)
             
         elif category == "documento_comercial":
             saved_path = Path(tempfile.gettempdir()) / f"doc_{photo.file_id}.jpg"
@@ -4325,11 +4575,15 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             
             kb = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("📄 Es Factura", callback_data="ocr_force_factura"),
-                    InlineKeyboardButton("📥 Es Retención IVA", callback_data="ocr_force_ret_iva"),
+                    InlineKeyboardButton("📄 Factura de Compra", callback_data="ocr_force_factura"),
+                    InlineKeyboardButton("📈 Factura/Nota de Venta", callback_data="ocr_force_sale"),
                 ],
                 [
-                    InlineKeyboardButton("💸 Es Retención ISLR", callback_data="ocr_force_ret_islr"),
+                    InlineKeyboardButton("📊 Reporte Z", callback_data="ocr_force_reporte_z"),
+                    InlineKeyboardButton("📥 Retención IVA", callback_data="ocr_force_ret_iva"),
+                ],
+                [
+                    InlineKeyboardButton("💸 Retención ISLR", callback_data="ocr_force_ret_islr"),
                     InlineKeyboardButton("❌ Cancelar", callback_data="ocr_cancel_photo"),
                 ]
             ])
@@ -4507,6 +4761,8 @@ async def handle_ocr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         
     if data == "ocr_cancel_photo":
         context.user_data.pop("pending_ocr_invoice", None)
+        context.user_data.pop("pending_ocr_sale", None)
+        context.user_data.pop("pending_ocr_reporte_z", None)
         context.user_data.pop("pending_ocr_ret_iva", None)
         context.user_data.pop("pending_ocr_ret_islr", None)
         saved_path_str = context.user_data.pop("pending_unknown_image", None)
@@ -4565,6 +4821,20 @@ async def handle_ocr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                 context.user_data.pop("pending_unknown_image", None)
                 saved_path.unlink(missing_ok=True)
                 await _send_ocr_invoice_card(update, context, msg_to_edit=msg)
+                
+            elif force_type == "sale":
+                fc = ocr_extract.extract_invoice_from_image(img)
+                context.user_data["pending_ocr_sale"] = _process_parsed_ocr_sale(fc, ctx)
+                context.user_data.pop("pending_unknown_image", None)
+                saved_path.unlink(missing_ok=True)
+                await _send_ocr_sale_card(update, context, msg_to_edit=msg)
+                
+            elif force_type == "reporte_z":
+                z_data = ocr_extract.extract_reporte_z_from_image(img)
+                context.user_data["pending_ocr_reporte_z"] = _process_parsed_ocr_reporte_z(z_data)
+                context.user_data.pop("pending_unknown_image", None)
+                saved_path.unlink(missing_ok=True)
+                await _send_ocr_reporte_z_card(update, context, msg_to_edit=msg)
                 
             elif force_type == "ret_iva":
                 ret_iva = ocr_extract.extract_from_image(img)
@@ -4658,6 +4928,86 @@ async def handle_ocr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             logger.exception("Error al forzar clasificación de foto")
             await msg.reply_text(f"❌ Error al procesar imagen forzada: {e!s}")
             
+    elif data == "ocr_confirm_sale":
+        pending = context.user_data.get("pending_ocr_sale")
+        if not pending:
+            await msg.reply_text("No hay venta pendiente de confirmación.")
+            return
+            
+        try:
+            ctx = _get_company_context(update)
+            inserted = excel_store.append_venta_record(
+                ctx.facturas_emitidas_path,
+                clasificacion=pending["clasificacion"],
+                estado="REGISTRADO",
+                fecha=pending["fecha_emision"],
+                numero_documento=pending["numero_documento"],
+                razon_social=pending["receptor"],
+                rif=pending["receptor_rif"],
+                base_imponible=pending["base_imponible"],
+                iva=pending["monto_iva"],
+                total=pending["total"],
+                texto_origen="Registrado desde OCR de foto.",
+            )
+            
+            if not inserted:
+                await msg.reply_text(f"⚠️ La {pending['clasificacion']} Nro {pending['numero_documento']} ya se encuentra registrada.")
+                context.user_data.pop("pending_ocr_sale", None)
+                try:
+                    await q.delete_message()
+                except Exception:
+                    pass
+                return
+                
+            await msg.reply_text(f"✅ {pending['clasificacion']} Nro {pending['numero_documento']} registrada con éxito en {ctx.facturas_emitidas_path.name}.")
+            context.user_data.pop("pending_ocr_sale", None)
+            try:
+                await q.delete_message()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.exception("Error al confirmar venta desde OCR")
+            await msg.reply_text(f"❌ Error al registrar venta: {e!s}")
+
+    elif data == "ocr_confirm_reporte_z":
+        pending = context.user_data.get("pending_ocr_reporte_z")
+        if not pending:
+            await msg.reply_text("No hay reporte Z pendiente de confirmación.")
+            return
+            
+        try:
+            ctx = _get_company_context(update)
+            inserted = excel_store.append_reporte_z_nuevo(
+                ctx.reportes_z_path,
+                numero_reporte=pending["numero_reporte"],
+                fecha_emision=pending["fecha_emision"],
+                sub_total=pending["sub_total"],
+                base_imponible=pending["base_imponible"],
+                monto_exento=pending["monto_exento"],
+                iva=pending["iva"],
+                total=pending["total"],
+                texto_origen="Registrado desde OCR de foto.",
+            )
+            
+            if not inserted:
+                await msg.reply_text(f"⚠️ El Reporte Z Nro {pending['numero_reporte']} ya se encuentra registrado.")
+                context.user_data.pop("pending_ocr_reporte_z", None)
+                try:
+                    await q.delete_message()
+                except Exception:
+                    pass
+                return
+                
+            await msg.reply_text(f"✅ Reporte Z Nro {pending['numero_reporte']} registrado con éxito en {ctx.reportes_z_path.name}.")
+            context.user_data.pop("pending_ocr_reporte_z", None)
+            try:
+                await q.delete_message()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.exception("Error al confirmar reporte Z desde OCR")
+            await msg.reply_text(f"❌ Error al registrar reporte Z: {e!s}")
+
     elif data == "ocr_confirm_invoice":
         pending = context.user_data.get("pending_ocr_invoice")
         if not pending:
@@ -5401,6 +5751,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
 
         if text == SUBMENU_CARGAR_FACTURA:
+            context.user_data["tributos_mode"] = "compra"
             await msg.reply_text(
                 "📥 *Cargar Facturas Recibidas (Compras)*\n\n"
                 "Puedes cargar facturas de las siguientes formas:\n"
@@ -5410,6 +5761,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 "4️⃣ Pega el texto copiado de la factura."
             )
         elif text == SUBMENU_RETENCION_RECIBIDA:
+            context.user_data["tributos_mode"] = "retencion_recibida"
             await msg.reply_text(
                 "🧾 *Cargar Retenciones Recibidas (Clientes)*\n\n"
                 "Puedes registrar retenciones de IVA/ISLR de las siguientes formas:\n"
@@ -5417,11 +5769,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 "2️⃣ Escribe los datos con el formato: `registrar retencion, fecha: DD/MM/AAAA, comprobante: XXXXXX, ...`"
             )
         elif text == SUBMENU_REPORTE_Z:
+            context.user_data["tributos_mode"] = "reporte_z"
             await msg.reply_text(
                 "📊 *Cargar Reporte Z de Ventas Diarias*\n\n"
                 "Envía la imagen del reporte Z impreso de tu máquina fiscal, o escribe sus datos de ventas directamente en texto."
             )
         elif text == SUBMENU_FACTURA_EMITIDA:
+            context.user_data["tributos_mode"] = "venta"
             await msg.reply_text(
                 "📈 *Cargar Factura Emitida (Ventas)*\n\n"
                 "Registra tus facturas de ventas emitidas:\n"

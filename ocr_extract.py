@@ -127,36 +127,42 @@ import re
 from .factura_compra_parse import FacturaCompraParsed
 
 INVOICE_PROMPT = """
-Analiza esta imagen de una factura de compra (proveedor emitiendo a SUFEVICA/Suministros Ferreteros Vittoria).
-Devuelve UNICAMENTE un JSON valido con estas claves exactas:
-- tipo_documento (ej: "Factura recibida / compra", "Nota de Credito", "Nota de Debito")
+Analiza esta imagen de una factura, nota de crédito o nota de débito comercial (puede ser de compra o de venta, física o fiscal).
+Devuelve UNICAMENTE un JSON válido con estas claves exactas:
+- tipo_documento (ej: "Factura", "Nota de Credito", "Nota de Debito")
 - fecha_emision (formato DD/MM/YYYY)
-- fecha_vencimiento (formato DD/MM/YYYY o vacio "")
-- numero_documento (numero de factura)
-- numero_control (numero de control de factura)
-- proveedor (nombre o razon social del emisor)
-- proveedor_rif (RIF del emisor, ej: J-12345678-9)
-- proveedor_telefono (telefono del emisor si esta visible, o vacio "")
-- direccion_fiscal_proveedor (direccion del emisor si esta visible, o vacio "")
-- receptor (nombre o razon social del receptor, ej: SUMINISTROS FERRETEROS VITTORIA, C.A.)
-- receptor_rif (RIF del receptor, ej: J-40194130-3)
-- subtotal (monto subtotal en la moneda original de los montos extraidos, ej: 2000.00)
-- monto_exento (monto exento de IVA en la moneda original de los montos extraidos, ej: 0.00)
-- base_imponible (base imponible gravada en la moneda original de los montos extraidos, ej: 2000.00)
-- monto_iva (monto del IVA en la moneda original de los montos extraidos, ej: 320.00)
-- total (monto total en la moneda original de los montos extraidos, ej: 2320.00)
-- contribuyente_tipo (determina si el emisor es "Especial", "Ordinario" o "Formal" segun las leyendas de la factura, o vacio "")
-- tasa_cambio (tasa de cambio de la factura si esta presente en el documento, ej: 39.58, o vacio "")
-- moneda_original (la moneda de los montos extraidos: "VES" para Bolívares o "USD" para Dólares)
+- fecha_vencimiento (formato DD/MM/YYYY o vacío "")
+- numero_documento (número del documento, ej. número de factura o de nota de crédito)
+- numero_control (número de control de la factura o nota de crédito)
+- proveedor (nombre o razón social del emisor/vendedor del documento)
+- proveedor_rif (RIF del emisor/vendedor, ej: J-12345678-9)
+- proveedor_telefono (teléfono del emisor/vendedor si está visible, o vacío "")
+- direccion_fiscal_proveedor (dirección del emisor/vendedor si está visible, o vacío "")
+- receptor (nombre o razón social del receptor/cliente/comprador)
+- receptor_rif (RIF del receptor/cliente/comprador, ej: J-40194130-3)
+- subtotal (monto subtotal en la moneda original de los montos extraídos, ej: 2000.00)
+- monto_exento (monto exento de IVA en la moneda original de los montos extraídos, ej: 0.00)
+- base_imponible (base imponible gravada en la moneda original de los montos extraídos, ej: 2000.00)
+- monto_iva (monto del IVA en la moneda original de los montos extraídos, ej: 320.00)
+- total (monto total en la moneda original de los montos extraídos, ej: 2320.00)
+- contribuyente_tipo (determina si el emisor es "Especial", "Ordinario" o "Formal" según las leyendas del documento, o vacío "")
+- tasa_cambio (tasa de cambio presente en el documento, ej: 39.58, o vacío "")
+- moneda_original (la moneda de los montos numéricos que colocas en las claves de arriba: "VES" para Bolívares o "USD" para Dólares)
 
-Reglas:
-1) Moneda y Selección de Datos:
-   - Si la factura contiene montos expresados en Dólares (USD) (ya sea como moneda principal, en una columna de doble columna, o referenciales), y posee una tasa de cambio o tasa BCV anotada en la factura: DEBES extraer los montos en Dólares (USD), extraer la tasa de cambio en 'tasa_cambio', e indicar 'moneda_original': "USD". El bot se encargará de realizar matemáticamente la conversión exacta a Bolívares en base a esa tasa de cambio.
-   - Si los montos están expresados única y exclusivamente en Bolívares (VES/Bs.) sin mencionar dólares ni tasa de cambio referencial, extrae los montos en bolívares e indica 'moneda_original': "VES" y 'tasa_cambio': "".
-2) Formato de montos: numérico sin comas ni puntos de miles, utilizando el punto (.) como separador decimal (ej: 12500.50).
-3) Formato de tasa_cambio: si está presente, devuélvela como número decimal utilizando el punto como separador decimal (ej: 39.5858), NO elimines el punto o coma decimal original del valor.
-4) Si un dato no aparece, usa cadena vacia "".
-5) No agregues texto explicativo fuera del JSON.
+Reglas de Extracción de Montos y Moneda:
+1) Identifica claramente quién es el emisor/vendedor (proveedor) y quién es el receptor/cliente. Lee atentamente el membrete del documento comercial. No asumas que la empresa del usuario es siempre el receptor o el emisor; deduce los roles de forma inteligente a partir del membrete y datos fiscales.
+2) Si el documento contiene montos expresados en Dólares (USD) (ya sea como moneda principal, en una columna de doble columna, o de forma referencial), y posee una tasa de cambio o tasa BCV referencial anotada:
+   - Extrae los valores numéricos correspondientes a la columna de Dólares (USD).
+   - Coloca la tasa de cambio en 'tasa_cambio' como número decimal (ej: 39.5858).
+   - Asigna 'moneda_original': "USD".
+   - El sistema convertirá automáticamente estos valores a Bolívares usando la tasa de cambio provista.
+3) Si los montos están expresados única y exclusivamente en Bolívares (VES/Bs.) sin indicar dólares ni tasa referencial:
+   - Extrae los valores numéricos en Bolívares.
+   - Asigna 'moneda_original': "VES" y 'tasa_cambio': "".
+4) Formato de montos: numérico puro, sin separadores de miles y con punto decimal (.) (ej: 12500.50). Si no hay monto exento, responde estrictamente con 0.00.
+5) Realiza una validación matemática básica: total = base_imponible + monto_iva + monto_exento. Si hay discrepancias menores de centavos, usa los valores impresos.
+6) Si un dato no aparece, responde con cadena vacía "".
+7) No agregues texto explicativo o formato fuera del JSON.
 """
 
 ISLR_PROMPT = """
@@ -183,13 +189,33 @@ Reglas:
 
 CLASSIFY_PROMPT = """
 Analiza esta imagen comercial y clasifícala en una de las siguientes categorías exactas:
-- "factura" (SI Y SOLO SI es una factura formal de compra o venta, o factura fiscal, NO nota de entrega ni presupuesto ni cotización)
+- "factura" (si es una factura formal de compra o venta, o factura fiscal, NO nota de entrega ni presupuesto ni cotización)
+- "nota_credito" (si es una nota de crédito comercial que modifica o anula una factura y contiene texto explícito como "NOTA DE CREDITO")
+- "reporte_z" (si es un Reporte Z de una máquina o impresora fiscal, que son tiras de papel largas y angostas de caja registradora con resúmenes diarios de venta)
 - "documento_comercial" (si es una nota de entrega, presupuesto, cotización, orden de compra o una captura de pantalla/imagen de tabla de Excel conteniendo productos o listado comercial)
 - "retencion_iva" (si es un comprobante de retención de IVA del SENIAT)
 - "retencion_islr" (si es un comprobante de retención de ISLR / Impuesto sobre la Renta)
 - "desconocido" (si es cualquier otra cosa)
 
 Devuelve UNICAMENTE la palabra de la categoría correspondiente, en minúsculas y sin comillas.
+"""
+
+REPORTE_Z_PROMPT = """
+Analiza esta imagen de un Reporte Z de una máquina fiscal (resumen diario de ventas de un comercio).
+Devuelve UNICAMENTE un JSON válido con estas claves exactas:
+- numero_reporte (ej: "0125" o "125")
+- fecha_emision (formato DD/MM/YYYY, ej: 15/05/2026)
+- sub_total (monto del subtotal o ventas gravadas antes del IVA en bolívares, ej: 1500.50)
+- base_imponible (monto total de las ventas gravadas en bolívares, ej: 1500.50)
+- monto_exento (monto de ventas exentas o no gravadas en bolívares, ej: 0.00)
+- iva (monto total del IVA del día en bolívares, ej: 240.08)
+- total (monto total de ventas del día en bolívares, ej: 1740.58)
+
+Reglas:
+1) Todos los montos deben ser numéricos sin comas ni puntos de miles, usando punto (.) como separador decimal (ej: 1500.50). Si un monto no aparece, usa "0.00".
+2) Si el número de reporte no está claro, busca la palabra "REPORTE Z" o "CIERRE Z" seguida de un número.
+3) Si no se encuentra un dato, usa una cadena vacía "".
+4) No agregues texto explicativo o formato fuera del JSON.
 """
 
 def classify_image_type(image: Image.Image) -> str:
@@ -207,10 +233,36 @@ def classify_image_type(image: Image.Image) -> str:
         ],
     )
     result = _safe_str(getattr(response, "text", "")).strip().lower()
-    for cat in ("factura", "documento_comercial", "retencion_iva", "retencion_islr"):
+    for cat in ("factura", "nota_credito", "reporte_z", "documento_comercial", "retencion_iva", "retencion_islr"):
         if cat in result:
             return cat
     return "desconocido"
+
+def extract_reporte_z_from_image(image: Image.Image) -> dict:
+    if not config.GEMINI_API_KEY:
+        raise RuntimeError("Falta GEMINI_API_KEY en .env.")
+
+    client = genai.Client(api_key=config.GEMINI_API_KEY)
+    image_bytes = _image_to_bytes(image)
+    response = _generate_content_with_retry(
+        client,
+        model=config.GEMINI_MODEL,
+        contents=[
+            REPORTE_Z_PROMPT,
+            genai.types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+        ],
+    )
+    response_text = _safe_str(getattr(response, "text", ""))
+    data = _extract_json_payload(response_text)
+    return {
+        "numero_reporte": _safe_str(data.get("numero_reporte")),
+        "fecha_emision": _safe_str(data.get("fecha_emision")),
+        "sub_total": _safe_str(data.get("sub_total")),
+        "base_imponible": _safe_str(data.get("base_imponible")),
+        "monto_exento": _safe_str(data.get("monto_exento")) or "0.00",
+        "iva": _safe_str(data.get("iva")),
+        "total": _safe_str(data.get("total")),
+    }
 
 def extract_invoice_from_image(image: Image.Image) -> FacturaCompraParsed:
     if not config.GEMINI_API_KEY:
