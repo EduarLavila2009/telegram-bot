@@ -198,18 +198,31 @@ ADMIN_PANEL_BUTTON = "⚙️ Panel Admin"
 
 
 def _main_keyboard(user_id: int | str = "") -> ReplyKeyboardMarkup:
-    buttons = [
-        [KeyboardButton(TRIBUTOS_BUTTON)],
-        [KeyboardButton(COTI_BUTTON), KeyboardButton(NOTA_BUTTON)],
-        [KeyboardButton(HISTORIAL_BUTTON)],
-        [KeyboardButton(VOICE_BUTTON), KeyboardButton(VOICE_CANCEL_BUTTON)],
-    ]
+    role = None
     if user_id:
         user = user_manager.get_user(user_id)
         if user:
             role = user.get("role")
-            if role in ("admin", "nueva_empresa"):
-                buttons.append([KeyboardButton("🚀 Menú de Inicio")])
+            
+    buttons = []
+    
+    # Si no hay ID, o es el admin, o tiene rol completo: mostrar todo
+    if not user_id or str(user_id) == str(config.ALLOWED_USER_ID) or role in ("admin", "full_access", "nueva_empresa", "tributos_and_cotizaciones"):
+        buttons.append([KeyboardButton(TRIBUTOS_BUTTON)])
+        buttons.append([KeyboardButton(COTI_BUTTON), KeyboardButton(NOTA_BUTTON)])
+        buttons.append([KeyboardButton(HISTORIAL_BUTTON)])
+    else:
+        if role == "tributos_only":
+            buttons.append([KeyboardButton(TRIBUTOS_BUTTON)])
+        elif role == "cotizaciones_only":
+            buttons.append([KeyboardButton(COTI_BUTTON), KeyboardButton(NOTA_BUTTON)])
+            buttons.append([KeyboardButton(HISTORIAL_BUTTON)])
+            
+    buttons.append([KeyboardButton(VOICE_BUTTON), KeyboardButton(VOICE_CANCEL_BUTTON)])
+    
+    if user_id:
+        if role in ("admin", "nueva_empresa") or str(user_id) == str(config.ALLOWED_USER_ID):
+            buttons.append([KeyboardButton("🚀 Menú de Inicio")])
             
     return ReplyKeyboardMarkup(
         keyboard=buttons,
@@ -221,12 +234,22 @@ def _main_keyboard(user_id: int | str = "") -> ReplyKeyboardMarkup:
 def _tributos_submenu_keyboard(user_id: int | str = "") -> ReplyKeyboardMarkup:
     # Si es un Contribuyente Ordinario de nueva_empresa, se quita SUBMENU_GENERAR_RETENCION ("✍️ Generar Retención")
     company_is_ordinario = False
+    user_is_tributos_only = False
     if user_id:
         user = user_manager.get_user(user_id)
-        if user and user.get("role") == "nueva_empresa" and user.get("company_type") == "Ordinario":
-            company_is_ordinario = True
-
-    if company_is_ordinario:
+        if user:
+            role = user.get("role")
+            if role == "nueva_empresa" and user.get("company_type") == "Ordinario":
+                company_is_ordinario = True
+            elif role == "tributos_only":
+                user_is_tributos_only = True
+                
+    if user_is_tributos_only:
+        kb_layout = [
+            [KeyboardButton(SUBMENU_GENERAR_REPORTES)],
+            [KeyboardButton(SUBMENU_VOLVER)],
+        ]
+    elif company_is_ordinario:
         kb_layout = [
             [KeyboardButton(SUBMENU_CARGAR_FACTURA), KeyboardButton(SUBMENU_RETENCION_RECIBIDA)],
             [KeyboardButton(SUBMENU_REPORTE_Z), KeyboardButton(SUBMENU_FACTURA_EMITIDA)],
@@ -423,9 +446,26 @@ def _check_permission(update: Update, module: str) -> bool:
     if role == "admin":
         return True
     if module == "tributos":
-        return role in ("full_access", "tributos_only", "nueva_empresa")
+        return role in ("full_access", "tributos_only", "nueva_empresa", "tributos_and_cotizaciones")
     if module == "cotizaciones":
-        return role in ("full_access", "cotizaciones_only", "nueva_empresa")
+        return role in ("full_access", "cotizaciones_only", "nueva_empresa", "tributos_and_cotizaciones")
+    return False
+
+
+def _can_modify_tributos(update: Update) -> bool:
+    if _is_public_or_sufevica(update):
+        return True
+    u = update.effective_user
+    if u is None:
+        return False
+    if u.id == config.ALLOWED_USER_ID:
+        return True
+    user = user_manager.get_user(u.id)
+    if not user:
+        return False
+    role = user.get("role")
+    if role in ("admin", "full_access", "nueva_empresa"):
+        return True
     return False
 
 
@@ -1684,7 +1724,8 @@ SYNC_FILES = {
     "facturas_recibidas": "FACTURAS-RECIBIDAS-NUEVO.xlsx",
     "facturas_emitidas": "FACTURAS-EMITIDAS.xlsx",
     "reportes_z": "REPORTES-Z-NUEVO.xlsx",
-    "productos": config.PRODUCTOS_PATH.name
+    "productos": config.PRODUCTOS_PATH.name,
+    "usuarios": "usuarios.json"
 }
 
 def get_sync_file_path(key: str, user_id: int | str | None = None) -> Path | None:
@@ -1699,6 +1740,8 @@ def get_sync_file_path(key: str, user_id: int | str | None = None) -> Path | Non
         return ctx.reportes_z_path
     elif key == "productos":
         return ctx.productos_path
+    elif key == "usuarios":
+        return Path(__file__).resolve().parent / "usuarios.json"
     return None
 
 _last_mtime_cache = {}
@@ -1740,8 +1783,26 @@ async def check_and_sync_files(context: ContextTypes.DEFAULT_TYPE) -> None:
     changed = False
     current_state = await _get_pinned_state(context.bot)
     
+    files_to_sync = []
+    # Archivos estáticos
     for key, filename in SYNC_FILES.items():
-        path = get_sync_file_path(key, update.effective_user.id)
+        path = get_sync_file_path(key)
+        if path:
+            files_to_sync.append((key, path, filename))
+            
+    # Archivos dinámicos de retenciones mensuales (contexto SUFEVICA por defecto)
+    ctx = CompanyContext(None)
+    if ctx.retenciones_emitidas_dir.is_dir():
+        for path in ctx.retenciones_emitidas_dir.glob("RETEN-EMIT-*.xlsx"):
+            key = f"dynamic_emit_{path.name.lower()}"
+            files_to_sync.append((key, path, path.name))
+            
+    if ctx.retenciones_islr_dir.is_dir():
+        for path in ctx.retenciones_islr_dir.glob("RETEN-ISLR-*.xlsx"):
+            key = f"dynamic_islr_{path.name.lower()}"
+            files_to_sync.append((key, path, path.name))
+            
+    for key, path, filename in files_to_sync:
         if not path or not path.exists():
             continue
         mtime = os.path.getmtime(path)
@@ -1776,11 +1837,20 @@ async def restore_files_from_backup(bot) -> None:
         logger.info("No se encontró ningún respaldo fijado. Iniciando con archivos locales actuales.")
         return
     logger.info("Restaurando archivos de Excel desde el respaldo de Telegram...")
+    ctx = CompanyContext(None)
     for key, file_id in current_state.items():
-        path = get_sync_file_path(key)
-        if not path:
-            continue
-        filename = SYNC_FILES[key]
+        if key.startswith("dynamic_emit_"):
+            filename = key[len("dynamic_emit_"):]
+            path = ctx.retenciones_emitidas_dir / filename
+        elif key.startswith("dynamic_islr_"):
+            filename = key[len("dynamic_islr_"):]
+            path = ctx.retenciones_islr_dir / filename
+        else:
+            path = get_sync_file_path(key)
+            if not path:
+                continue
+            filename = SYNC_FILES.get(key, path.name)
+            
         try:
             logger.info(f"Descargando {filename} desde Telegram...")
             tg_file = await bot.get_file(file_id)
@@ -1827,9 +1897,15 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     filename = msg.document.file_name
     logger.info(f"Recibido documento: {filename} (chat_id={msg.chat_id})")
+    
     if not _allowed(update) and not _is_sufevica_chat(update):
         logger.warning(f"Documento rechazado por falta de permisos (chat_id={msg.chat_id})")
         await _deny(update)
+        return
+
+    user = user_manager.get_user(update.effective_user.id)
+    if user and user.get("role") == "tributos_only":
+        await msg.reply_text("❌ Tu nivel de autorización (\"Tributos Only\") solo te permite consultar y generar reportes, no subir o reemplazar archivos en el bot.")
         return
 
     # Interceptar firma y sello para admin (cargar firma y sello)
@@ -2626,6 +2702,10 @@ async def _process_intent(
         await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
         return
 
+    if not _can_modify_tributos(update):
+        await msg.reply_text("❌ Tu nivel de autorización (\"Tributos Only\") solo te permite consultar y generar reportes, no registrar nueva información en el bot.")
+        return
+
     ctx = _get_company_context(update)
     is_channel = update.channel_post is not None or update.edited_channel_post is not None
     emit_docs = _parse_emitir_retencion_request(text)
@@ -2642,42 +2722,31 @@ async def _process_intent(
     if islr_data is not None:
         if not await _check_and_consume_quota(update):
             return
-        try:
-            emission_date = _parse_user_date(islr_data["fecha_emision"]) or date.today()
-            monthly_path = excel_store.monthly_retencion_islr_path(ctx.retenciones_islr_dir, emission_date)
-            
-            base_val = excel_store.parse_amount_ves_string(islr_data["base_imponible"]) or Decimal("0")
-            rate_val = excel_store.parse_amount_ves_string(islr_data["porcentaje_retencion"]) or Decimal("0")
-            if rate_val > 1:
-                rate_val = rate_val / 100
-            islr_val = excel_store.parse_amount_ves_string(islr_data["islr_retenido"]) or Decimal("0")
-            total_val = excel_store.parse_amount_ves_string(islr_data["total_factura"]) or Decimal("0")
-            
-            excel_store.append_retencion_islr(
-                monthly_path,
-                numero_comprobante=islr_data["numero_comprobante"],
-                fecha_emision=islr_data["fecha_emision"],
-                periodo_fiscal=_periodo_fiscal(emission_date),
-                proveedor=islr_data["proveedor"],
-                proveedor_rif=islr_data["proveedor_rif"],
-                concepto_retencion=islr_data["concepto_retencion"],
-                numero_documento=islr_data["numero_documento"],
-                numero_control=islr_data["numero_control"],
-                base_imponible=base_val,
-                porcentaje_retencion=rate_val,
-                islr_retenido=islr_val,
-                total_factura=total_val,
-            )
-            await _notify_same_source_channel(
-                update,
-                context,
-                f"✅ Retención de ISLR Nro {islr_data['numero_comprobante']} registrada correctamente en {monthly_path.name}.",
-            )
-        except Exception as e:
+        emission_date = _parse_user_date(islr_data["fecha_emision"]) or date.today()
+        monthly_path = excel_store.monthly_retencion_islr_path(ctx.retenciones_islr_dir, emission_date)
+        
+        # Validar duplicados de comprobantes de ISLR
+        dup_info = excel_store.check_retencion_islr_exists(ctx.retenciones_islr_dir, islr_data["numero_comprobante"])
+        if dup_info:
+            context.user_data["pending_replace_islr"] = {
+                "type": "text",
+                "data": islr_data,
+                "monthly_path": str(monthly_path),
+            }
+            kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Sí, sustituir", callback_data=f"rep_ret_conf:islr:{islr_data['numero_comprobante']}"),
+                    InlineKeyboardButton("❌ Cancelar", callback_data="rep_ret_cancel")
+                ]
+            ])
             await msg.reply_text(
-                "No pude registrar la retención de ISLR en Excel.\n"
-                f"Detalle: {e!s}"
+                f"⚠️ La retención de ISLR Nro {islr_data['numero_comprobante']} ya existe.\n"
+                f"¿Deseas sustituir el comprobante de ISLR existente?",
+                reply_markup=kb
             )
+            return
+
+        await _save_retencion_islr_text(update, context, islr_data, ctx, monthly_path)
         return
 
     ret_data = _parse_retencion_entry_request(text)
@@ -3064,6 +3133,94 @@ async def _process_intent(
     )
 
 
+async def _save_retencion_islr_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    islr_data: dict,
+    ctx: CompanyContext,
+    monthly_path: Path
+) -> None:
+    msg = update.effective_message
+    if not msg:
+        return
+    try:
+        base_val = excel_store.parse_amount_ves_string(islr_data["base_imponible"]) or Decimal("0")
+        rate_val = excel_store.parse_amount_ves_string(islr_data["porcentaje_retencion"]) or Decimal("0")
+        if rate_val > 1:
+            rate_val = rate_val / 100
+        islr_val = excel_store.parse_amount_ves_string(islr_data["islr_retenido"]) or Decimal("0")
+        total_val = excel_store.parse_amount_ves_string(islr_data["total_factura"]) or Decimal("0")
+        
+        emission_date = _parse_user_date(islr_data["fecha_emision"]) or date.today()
+
+        excel_store.append_retencion_islr(
+            monthly_path,
+            numero_comprobante=islr_data["numero_comprobante"],
+            fecha_emision=islr_data["fecha_emision"],
+            periodo_fiscal=_periodo_fiscal(emission_date),
+            proveedor=islr_data["proveedor"],
+            proveedor_rif=islr_data["proveedor_rif"],
+            concepto_retencion=islr_data["concepto_retencion"],
+            numero_documento=islr_data["numero_documento"],
+            numero_control=islr_data["numero_control"],
+            base_imponible=base_val,
+            porcentaje_retencion=rate_val,
+            islr_retenido=islr_val,
+            total_factura=total_val,
+        )
+        await _notify_same_source_channel(
+            update,
+            context,
+            f"✅ Retención de ISLR Nro {islr_data['numero_comprobante']} registrada correctamente en {monthly_path.name}.",
+        )
+    except Exception as e:
+        await msg.reply_text(
+            "No pude registrar la retención de ISLR en Excel.\n"
+            f"Detalle: {e!s}"
+        )
+
+
+async def _save_retencion_islr_ocr(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    pending: dict,
+    ctx: CompanyContext,
+    monthly_path: Path
+) -> None:
+    msg = update.effective_message
+    if not msg:
+        return
+    try:
+        base_val = excel_store.parse_amount_ves_string(pending["base_imponible"]) or Decimal("0")
+        rate_val = excel_store.parse_amount_ves_string(pending["porcentaje_retencion"]) or Decimal("0")
+        if rate_val > 1:
+            rate_val = rate_val / 100
+        islr_val = excel_store.parse_amount_ves_string(pending["islr_retenido"]) or Decimal("0")
+        total_val = excel_store.parse_amount_ves_string(pending["total_factura"]) or Decimal("0")
+        
+        emission_date = tributario_engine._parse_row_date(pending["fecha_emision"]) or date.today()
+
+        excel_store.append_retencion_islr(
+            monthly_path,
+            numero_comprobante=pending["numero_comprobante"],
+            fecha_emision=pending["fecha_emision"],
+            periodo_fiscal=_periodo_fiscal(emission_date),
+            proveedor=pending["proveedor"],
+            proveedor_rif=pending["proveedor_rif"],
+            concepto_retencion=pending["concepto_retencion"],
+            numero_documento=pending["numero_documento"],
+            numero_control=pending["numero_control"],
+            base_imponible=base_val,
+            porcentaje_retencion=rate_val,
+            islr_retenido=islr_val,
+            total_factura=total_val,
+        )
+        await msg.reply_text(f"✅ Retención de ISLR Nro {pending['numero_comprobante']} registrada con éxito en {monthly_path.name}.")
+    except Exception as e:
+        logger.exception("Error al guardar retención ISLR desde OCR")
+        await msg.reply_text(f"❌ Error al registrar retención ISLR: {e!s}")
+
+
 async def _emitir_retencion_generate(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -3113,6 +3270,27 @@ async def _emitir_retencion_generate(
     provider_phone = str(pending.get("provider_phone") or "").strip()
     provider_address = str(pending.get("provider_address") or "").strip()
     base_total, iva_total, retenido = _totals_for_items(items)
+
+    # Validar duplicados de comprobantes de IVA
+    dup_info = excel_store.check_retencion_emitida_exists(ctx.retenciones_emitidas_dir, num_comp)
+    if dup_info and not pending.get("replace_confirmed"):
+        kb = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Sí, sustituir", callback_data=f"rep_ret_conf:iva:{num_comp}"),
+                InlineKeyboardButton("❌ Cancelar", callback_data="rep_ret_cancel")
+            ]
+        ])
+        await msg.reply_text(
+            f"⚠️ El comprobante de IVA Nro {num_comp} ya existe.\n"
+            f"¿Deseas sustituir el correlativo existente y reactivar las facturas previas?",
+            reply_markup=kb
+        )
+        return
+
+    if dup_info and pending.get("replace_confirmed"):
+        excel_store.delete_retencion_emitida_row(dup_info[0], dup_info[1])
+        logger.info("Deleted duplicate IVA retention %s at row %d", dup_info[0], dup_info[1])
+
     excel_store.append_retencion_emitida(
         monthly_path,
         numero_comprobante=num_comp,
@@ -3252,7 +3430,94 @@ async def handle_emit_retention_callback(
         pending["format"] = "pdf" if data.endswith("pdf") else "excel"
         await _emitir_retencion_generate(update, context)
         return
-
+async def handle_replace_retention_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    q = update.callback_query
+    if not q:
+        return
+    await q.answer()
+    data = (q.data or "").strip()
+    msg = q.message
+    if not msg:
+        return
+    
+    if data.startswith("rep_ret_conf:"):
+        parts = data.split(":")
+        if len(parts) < 3:
+            return
+        ret_type = parts[1]
+        num_comp = parts[2]
+        
+        ctx = _get_company_context(update)
+        
+        if ret_type == "iva":
+            pending = context.user_data.get("pending_emit_ret")
+            if not pending:
+                await msg.reply_text("No hay una emisión de IVA pendiente en tu sesión.")
+                return
+            
+            # 1. Delete the existing IVA retention
+            dup_info = excel_store.check_retencion_emitida_exists(ctx.retenciones_emitidas_dir, num_comp)
+            if dup_info:
+                path, row_idx, _ = dup_info
+                excel_store.delete_retencion_emitida_row(path, row_idx)
+                logger.info("Deleted existing IVA retention %s at row %d", path, row_idx)
+            
+            # 2. Re-emit the retention with replace_confirmed=True
+            pending["replace_confirmed"] = True
+            
+            try:
+                await q.delete_message()
+            except Exception:
+                pass
+                
+            await _emitir_retencion_generate(update, context)
+            
+        elif ret_type == "islr":
+            pending_replace = context.user_data.get("pending_replace_islr")
+            if not pending_replace:
+                await msg.reply_text("No hay una retención de ISLR pendiente para sustituir.")
+                return
+            
+            # 1. Delete the existing ISLR retention
+            dup_info = excel_store.check_retencion_islr_exists(ctx.retenciones_islr_dir, num_comp)
+            if dup_info:
+                path, row_idx, _ = dup_info
+                excel_store.delete_retencion_islr_row(path, row_idx)
+                logger.info("Deleted existing ISLR retention %s at row %d", path, row_idx)
+                
+            # 2. Save the new one
+            is_type = pending_replace.get("type")
+            islr_data = pending_replace.get("data")
+            
+            emission_date_str = islr_data.get("fecha_emision")
+            emission_date = _parse_user_date(emission_date_str) or tributario_engine._parse_row_date(emission_date_str) or date.today()
+            monthly_path = excel_store.monthly_retencion_islr_path(ctx.retenciones_islr_dir, emission_date)
+            
+            try:
+                await q.delete_message()
+            except Exception:
+                pass
+                
+            if is_type == "text":
+                await _save_retencion_islr_text(update, context, islr_data, ctx, monthly_path)
+            elif is_type == "ocr":
+                await _save_retencion_islr_ocr(update, context, islr_data, ctx, monthly_path)
+                
+            context.user_data.pop("pending_replace_islr", None)
+            
+    elif data == "rep_ret_cancel":
+        context.user_data.pop("pending_emit_ret", None)
+        context.user_data.pop("pending_replace_islr", None)
+        
+        try:
+            await q.delete_message()
+        except Exception:
+            pass
+            
+        await msg.reply_text("❌ Operación cancelada. El comprobante existente no ha sido modificado.")
 
 async def mi_id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Para comprobar el id que Telegram usa (cualquier usuario)."""
@@ -3530,6 +3795,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not _allowed(update):
         await _deny(update)
         return
+    
+    user = user_manager.get_user(update.effective_user.id)
+    if user and user.get("role") == "tributos_only":
+        await msg.reply_text("❌ Tu nivel de autorización (\"Tributos Only\") solo te permite consultar y generar reportes, no subir o procesar imágenes en el bot.")
+        return
+
     if not msg.photo:
         return
 
@@ -4492,34 +4763,35 @@ async def handle_ocr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             ctx = _get_company_context(update)
             emission_date = tributario_engine._parse_row_date(pending["fecha_emision"]) or date.today()
             monthly_path = excel_store.monthly_retencion_islr_path(ctx.retenciones_islr_dir, emission_date)
+            num_comp = pending["numero_comprobante"]
             
-            base_val = excel_store.parse_amount_ves_string(pending["base_imponible"]) or Decimal("0")
-            rate_val = excel_store.parse_amount_ves_string(pending["porcentaje_retencion"]) or Decimal("0")
-            if rate_val > 1:
-                rate_val = rate_val / 100
-            islr_val = excel_store.parse_amount_ves_string(pending["islr_retenido"]) or Decimal("0")
-            total_val = excel_store.parse_amount_ves_string(pending["total_factura"]) or Decimal("0")
+            # Validar duplicados de comprobantes de ISLR
+            dup_info = excel_store.check_retencion_islr_exists(ctx.retenciones_islr_dir, num_comp)
+            if dup_info:
+                context.user_data["pending_replace_islr"] = {
+                    "type": "ocr",
+                    "data": pending,
+                    "monthly_path": str(monthly_path),
+                }
+                kb = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Sí, sustituir", callback_data=f"rep_ret_conf:islr:{num_comp}"),
+                        InlineKeyboardButton("❌ Cancelar", callback_data="rep_ret_cancel")
+                    ]
+                ])
+                await msg.reply_text(
+                    f"⚠️ La retención de ISLR Nro {num_comp} ya existe.\n"
+                    f"¿Deseas sustituir el comprobante de ISLR existente?",
+                    reply_markup=kb
+                )
+                try:
+                    await q.delete_message()
+                except Exception:
+                    pass
+                return
             
-            excel_store.append_retencion_islr(
-                monthly_path,
-                numero_comprobante=pending["numero_comprobante"],
-                fecha_emision=pending["fecha_emision"],
-                periodo_fiscal=_periodo_fiscal(emission_date),
-                proveedor=pending["proveedor"],
-                proveedor_rif=pending["proveedor_rif"],
-                concepto_retencion=pending["concepto_retencion"],
-                numero_documento=pending["numero_documento"],
-                numero_control=pending["numero_control"],
-                base_imponible=base_val,
-                porcentaje_retencion=rate_val,
-                islr_retenido=islr_val,
-                total_factura=total_val,
-            )
-            await msg.reply_text(f"✅ Retención de ISLR Nro {pending['numero_comprobante']} registrada con éxito en {monthly_path.name}.")
+            await _save_retencion_islr_ocr(update, context, pending, ctx, monthly_path)
             
-        except Exception as e:
-            logger.exception("Error al guardar retención ISLR desde OCR")
-            await msg.reply_text(f"❌ Error al registrar retención ISLR: {e!s}")
         finally:
             context.user_data.pop("pending_ocr_ret_islr", None)
             try:
@@ -4532,6 +4804,12 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if not _allowed(update):
         await _deny(update)
         return
+        
+    user = user_manager.get_user(update.effective_user.id)
+    if user and user.get("role") == "tributos_only":
+        await update.message.reply_text("❌ Tu nivel de autorización (\"Tributos Only\") solo te permite consultar y generar reportes, no usar comandos de voz en el bot.")
+        return
+
     context.user_data.setdefault("voice_mode", False)
     if not update.message or not update.message.voice:
         return
@@ -4587,6 +4865,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         context.user_data.get("awaiting_company_phone") is not None or
         context.user_data.get("awaiting_company_address") is not None or
         context.user_data.get("awaiting_company_signature") is not None or
+        context.user_data.get("awaiting_company_next_cotizacion") is not None or
+        context.user_data.get("awaiting_company_next_nota") is not None or
         context.user_data.get("awaiting_emit_docs") is not None or
         context.user_data.get("admin_state") is not None or
         context.user_data.get("share_doc") is not None
@@ -4672,6 +4952,42 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await msg.reply_text(f"✅ Dirección fiscal actualizada a:\n_{new_address}_", parse_mode="Markdown")
         await _show_company_config_menu(update, context)
         return
+
+    elif context.user_data.get("awaiting_company_next_cotizacion"):
+        val = text.strip()
+        if not val.isdigit() or int(val) <= 0:
+            await msg.reply_text(
+                "❌ *Número Inválido*\n\n"
+                "Debe ser un número entero mayor a cero (ej: `18`).\n"
+                "Por favor, verifícalo e ingrésalo correctamente o envía /start para cancelar:",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data="cfg_company_back")]])
+            )
+            return
+        context.user_data.pop("awaiting_company_next_cotizacion", None)
+        num_val = int(val)
+        user_manager.update_user_field(user_id, "next_cotizacion", num_val)
+        await msg.reply_text(f"✅ Próxima Cotización actualizada a: `{num_val:06d}`", parse_mode="Markdown")
+        await _show_company_config_menu(update, context)
+        return
+
+    elif context.user_data.get("awaiting_company_next_nota"):
+        val = text.strip()
+        if not val.isdigit() or int(val) <= 0:
+            await msg.reply_text(
+                "❌ *Número Inválido*\n\n"
+                "Debe ser un número entero mayor a cero (ej: `10`).\n"
+                "Por favor, verifícalo e ingrésalo correctamente o envía /start para cancelar:",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data="cfg_company_back")]])
+            )
+            return
+        context.user_data.pop("awaiting_company_next_nota", None)
+        num_val = int(val)
+        user_manager.update_user_field(user_id, "next_nota", num_val)
+        await msg.reply_text(f"✅ Próxima Nota de Entrega actualizada a: `{num_val:06d}`", parse_mode="Markdown")
+        await _show_company_config_menu(update, context)
+        return
     
     # Limpiar flujos/estados si es navegación de menús
     if text in {
@@ -4752,6 +5068,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data=f"admin_edit:{target_uid}")]])
                     )
                     return
+
+            elif field in ("next_cotizacion", "next_nota"):
+                if not (val.isdigit() and int(val) > 0):
+                    await msg.reply_text(
+                        "❌ *Número Inválido*\n\n"
+                        "Debe ser un número entero mayor a cero (ej: `18`).\n"
+                        "Por favor, verifícalo e ingrésalo correctamente o envía /start para cancelar:",
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data=f"admin_edit:{target_uid}")]])
+                    )
+                    return
+                val = int(val)
 
             user_manager.update_user_field(target_uid, field, val)
             context.user_data.pop("admin_state", None)
@@ -4869,64 +5197,49 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    elif text == SUBMENU_CARGAR_FACTURA:
+    elif text in (SUBMENU_CARGAR_FACTURA, SUBMENU_RETENCION_RECIBIDA, SUBMENU_REPORTE_Z, SUBMENU_FACTURA_EMITIDA, SUBMENU_GENERAR_RETENCION):
         if not _check_permission(update, "tributos"):
             await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
             return
-        await msg.reply_text(
-            "📥 *Cargar Facturas Recibidas (Compras)*\n\n"
-            "Puedes cargar facturas de las siguientes formas:\n"
-            "1️⃣ Envía la imagen o foto de la factura física.\n"
-            "2️⃣ Envía el archivo PDF o XML de la factura digital.\n"
-            "3️⃣ Envía una nota de voz dictando los datos.\n"
-            "4️⃣ Pega el texto copiado de la factura."
-        )
-        return
+        if not _can_modify_tributos(update):
+            await msg.reply_text("❌ Tu nivel de autorización (\"Tributos Only\") solo te permite consultar y generar reportes, no registrar nueva información en el bot.")
+            return
 
-    elif text == SUBMENU_RETENCION_RECIBIDA:
-        if not _check_permission(update, "tributos"):
-            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
-            return
-        await msg.reply_text(
-            "🧾 *Cargar Retenciones Recibidas (Clientes)*\n\n"
-            "Puedes registrar retenciones de IVA/ISLR de las siguientes formas:\n"
-            "1️⃣ Envía la imagen/foto o PDF del comprobante de retención.\n"
-            "2️⃣ Escribe los datos con el formato: `registrar retencion, fecha: DD/MM/AAAA, comprobante: XXXXXX, ...`"
-        )
-        return
-
-    elif text == SUBMENU_REPORTE_Z:
-        if not _check_permission(update, "tributos"):
-            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
-            return
-        await msg.reply_text(
-            "📊 *Cargar Reporte Z de Ventas Diarias*\n\n"
-            "Envía la imagen del reporte Z impreso de tu máquina fiscal, o escribe sus datos de ventas directamente en texto."
-        )
-        return
-
-    elif text == SUBMENU_FACTURA_EMITIDA:
-        if not _check_permission(update, "tributos"):
-            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
-            return
-        await msg.reply_text(
-            "📈 *Cargar Factura Emitida (Ventas)*\n\n"
-            "Registra tus facturas de ventas emitidas:\n"
-            "1️⃣ Envía la foto o el PDF de la factura emitida.\n"
-            "2️⃣ Escribe los datos correspondientes en texto."
-        )
-        return
-
-    elif text == SUBMENU_GENERAR_RETENCION:
-        if not _check_permission(update, "tributos"):
-            await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
-            return
-        await msg.reply_text(
-            "✍️ *Generar Comprobante de Retención de IVA*\n\n"
-            "Por favor, escribe el o los números de factura (separados por coma o barra vertical `|`) "
-            "a las cuales les deseas emitir el comprobante (ej: `00007553` o `00007553|00007554`):"
-        )
-        context.user_data["awaiting_emit_docs"] = True
+        if text == SUBMENU_CARGAR_FACTURA:
+            await msg.reply_text(
+                "📥 *Cargar Facturas Recibidas (Compras)*\n\n"
+                "Puedes cargar facturas de las siguientes formas:\n"
+                "1️⃣ Envía la imagen o foto de la factura física.\n"
+                "2️⃣ Envía el archivo PDF o XML de la factura digital.\n"
+                "3️⃣ Envía una nota de voz dictando los datos.\n"
+                "4️⃣ Pega el texto copiado de la factura."
+            )
+        elif text == SUBMENU_RETENCION_RECIBIDA:
+            await msg.reply_text(
+                "🧾 *Cargar Retenciones Recibidas (Clientes)*\n\n"
+                "Puedes registrar retenciones de IVA/ISLR de las siguientes formas:\n"
+                "1️⃣ Envía la imagen/foto o PDF del comprobante de retención.\n"
+                "2️⃣ Escribe los datos con el formato: `registrar retencion, fecha: DD/MM/AAAA, comprobante: XXXXXX, ...`"
+            )
+        elif text == SUBMENU_REPORTE_Z:
+            await msg.reply_text(
+                "📊 *Cargar Reporte Z de Ventas Diarias*\n\n"
+                "Envía la imagen del reporte Z impreso de tu máquina fiscal, o escribe sus datos de ventas directamente en texto."
+            )
+        elif text == SUBMENU_FACTURA_EMITIDA:
+            await msg.reply_text(
+                "📈 *Cargar Factura Emitida (Ventas)*\n\n"
+                "Registra tus facturas de ventas emitidas:\n"
+                "1️⃣ Envía la foto o el PDF de la factura emitida.\n"
+                "2️⃣ Escribe los datos correspondientes en texto."
+            )
+        elif text == SUBMENU_GENERAR_RETENCION:
+            await msg.reply_text(
+                "✍️ *Generar Comprobante de Retención de IVA*\n\n"
+                "Por favor, escribe el o los números de factura (separados por coma o barra vertical `|`) "
+                "a las cuales les deseas emitir el comprobante (ej: `00007553` o `00007553|00007554`):"
+            )
+            context.user_data["awaiting_emit_docs"] = True
         return
 
     elif text == SUBMENU_GENERAR_REPORTES:
@@ -6266,6 +6579,10 @@ async def _show_company_config_menu(update: Update, context: ContextTypes.DEFAUL
     firma_personalizada = (ctx.dir_path / "firma_sello_transparente.png").exists()
     firma_status = "✅ Personalizada" if firma_personalizada else "❌ Por defecto (SUFEVICA)"
 
+    user = user_manager.get_user(ctx.user_id) if ctx.user_id else None
+    next_coti = user.get("next_cotizacion", 1) if user else 1
+    next_nt = user.get("next_nota", 1) if user else 1
+
     text = (
         f"🏢 *Configuración de la Empresa (FlashTax)*\n\n"
         f"• *Razón Social:* {ctx.company_name}\n"
@@ -6274,7 +6591,9 @@ async def _show_company_config_menu(update: Update, context: ContextTypes.DEFAUL
         f"• *Correo del Contador:* `{ctx.company_email or 'no definido'}`\n"
         f"• *Teléfono:* `{ctx.company_phone or 'no definido'}`\n"
         f"• *Dirección:* `{ctx.company_address or 'no definida'}`\n"
-        f"• *Firma y Sello:* {firma_status}\n\n"
+        f"• *Firma y Sello:* {firma_status}\n"
+        f"• *Próxima Cotización:* `{next_coti:06d}`\n"
+        f"• *Próxima Nota de Entrega:* `{next_nt:06d}`\n\n"
         f"Seleccione el campo que desea modificar usando los botones de abajo:"
     )
 
@@ -6286,6 +6605,7 @@ async def _show_company_config_menu(update: Update, context: ContextTypes.DEFAUL
         [InlineKeyboardButton("📞 Modificar Teléfono", callback_data="cfg_company_phone")],
         [InlineKeyboardButton("📍 Modificar Dirección Fiscal", callback_data="cfg_company_address")],
         [InlineKeyboardButton("✍️ Subir Firma y Sello", callback_data="cfg_company_signature")],
+        [InlineKeyboardButton("🔢 Próxima Cotización", callback_data="cfg_next_cotizacion"), InlineKeyboardButton("🔢 Próxima Nota", callback_data="cfg_next_nota")],
         [InlineKeyboardButton("🔙 Volver al Inicio", callback_data="cfg_company_close")]
     ])
 
@@ -6317,6 +6637,8 @@ async def handle_cfg_company_callback(update: Update, context: ContextTypes.DEFA
     context.user_data.pop("awaiting_company_phone", None)
     context.user_data.pop("awaiting_company_address", None)
     context.user_data.pop("awaiting_company_signature", None)
+    context.user_data.pop("awaiting_company_next_cotizacion", None)
+    context.user_data.pop("awaiting_company_next_nota", None)
 
     if data == "cfg_company_close":
         await _show_startup_menu(update, context, msg_to_edit=msg)
@@ -6375,6 +6697,22 @@ async def handle_cfg_company_callback(update: Update, context: ContextTypes.DEFA
             "✍️ *Subir Firma y Sello*\n\n"
             "Por favor, envía por chat la *imagen* (foto o archivo JPG/PNG) que contiene tu firma y sello.\n\n"
             "Idealmente, utiliza una imagen con fondo transparente para que se vea profesional sobre tus PDF.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data="cfg_company_back")]])
+        )
+
+    elif data == "cfg_next_cotizacion":
+        context.user_data["awaiting_company_next_cotizacion"] = True
+        await msg.edit_text(
+            "🔢 *Modificar Siguiente Cotización*\n\nEscribe el próximo número correlativo que deseas asignar a tus cotizaciones (ej: `18`):",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data="cfg_company_back")]])
+        )
+
+    elif data == "cfg_next_nota":
+        context.user_data["awaiting_company_next_nota"] = True
+        await msg.edit_text(
+            "🔢 *Modificar Siguiente Nota de Entrega*\n\nEscribe el próximo número correlativo que deseas asignar a tus notas de entrega (ej: `10`):",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancelar", callback_data="cfg_company_back")]])
         )
@@ -6505,22 +6843,58 @@ async def _send_document_email_async(
         context.user_data.pop("share_doc", None)
 
 
-def _get_and_increment_correlativo(doc_type: str) -> str:
+def _get_and_increment_correlativo(doc_type: str, user_id: int | str | None = None) -> str:
     correlativos_path = Path(__file__).resolve().parent / "modulo_cotizaciones" / "correlativos.json"
-    data = {"cotizacion": 1, "nota": 1}
-    if correlativos_path.exists():
+    key = "next_cotizacion" if doc_type == "cotizacion" else "next_nota"
+    num = None
+    
+    # 1. Intentar obtener el correlativo del perfil de usuario (usuarios.json)
+    if user_id is not None:
+        user = user_manager.get_user(user_id)
+        if user:
+            num = user.get(key)
+            if num is not None:
+                try:
+                    num = int(num)
+                except (ValueError, TypeError):
+                    num = None
+                    
+    # 2. Si no está en el perfil, buscar en el archivo global correlativos.json
+    if num is None:
+        global_data = {"cotizacion": 1, "nota": 1}
+        if correlativos_path.exists():
+            try:
+                import json
+                global_data = json.loads(correlativos_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        num = global_data.get(doc_type, 1)
         try:
-            import json
-            data = json.loads(correlativos_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    num = data.get(doc_type, 1)
-    data[doc_type] = num + 1
+            num = int(num)
+        except (ValueError, TypeError):
+            num = 1
+            
+    # 3. Incrementar el correlativo actual
+    next_num = num + 1
+    
+    # 4. Guardar en el perfil de usuario (si existe)
+    if user_id is not None:
+        user_manager.update_user_field(user_id, key, next_num)
+        
+    # 5. Guardar también en el archivo global correlativos.json para retrocompatibilidad
     try:
         import json
-        correlativos_path.write_text(json.dumps(data, indent=4), encoding="utf-8")
+        global_data = {"cotizacion": 1, "nota": 1}
+        if correlativos_path.exists():
+            try:
+                global_data = json.loads(correlativos_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        global_data[doc_type] = next_num
+        correlativos_path.write_text(json.dumps(global_data, indent=4), encoding="utf-8")
     except Exception:
         pass
+        
     return f"{num:06d}"
 
 
@@ -7285,7 +7659,8 @@ async def handle_builder_callback(update: Update, context: ContextTypes.DEFAULT_
             return
             
         doc_type = doc_data["docType"]
-        correlativo = _get_and_increment_correlativo(doc_type)
+        user_id = update.effective_user.id if update.effective_user else None
+        correlativo = _get_and_increment_correlativo(doc_type, user_id)
         doc_data["docNumber"] = correlativo
         
         try:
@@ -7343,7 +7718,8 @@ async def handle_cotizaciones_callback(
     
     # Asignar correlativo automático secuencial
     doc_type = doc_data["docType"]
-    correlativo = _get_and_increment_correlativo(doc_type)
+    user_id = update.effective_user.id if update.effective_user else None
+    correlativo = _get_and_increment_correlativo(doc_type, user_id)
     doc_data["docNumber"] = correlativo
     
     # Eliminar mensaje de espera
@@ -7558,6 +7934,8 @@ async def _show_admin_user_detail(update: Update, context: ContextTypes.DEFAULT_
         role_lbl = "Tributos Only"
     elif role == "cotizaciones_only":
         role_lbl = "Cotizaciones Only"
+    elif role == "tributos_and_cotizaciones":
+        role_lbl = "Tributos + Cotizaciones"
     else:
         role_lbl = "Acceso Total"
 
@@ -7589,6 +7967,9 @@ async def _show_admin_user_detail(update: Update, context: ContextTypes.DEFAULT_
             
     max_seq = max(max_seq_excel, max_seq_config)
     last_correlative = f"{prefix}{max_seq:08d}"
+    
+    next_coti = u_info.get("next_cotizacion", 1)
+    next_nt = u_info.get("next_nota", 1)
 
     text = (
         f"Nombre: {u_info.get('name')} ({u_info.get('company_email') or 'sin correo'})\n"
@@ -7602,7 +7983,9 @@ async def _show_admin_user_detail(update: Update, context: ContextTypes.DEFAULT_
         f"🔹 *RIF:* `{company_rif}`\n"
         f"📍 *Dirección:* {company_address}\n"
         f"📞 *Teléfono:* `{company_phone}`\n"
-        f"🔢 *Último correlativo:* `{last_correlative}`"
+        f"🔢 *Último correlativo:* `{last_correlative}`\n"
+        f"📋 *Próxima Cotización:* `{next_coti:06d}`\n"
+        f"📦 *Próxima Nota:* `{next_nt:06d}`"
     )
 
     status_btn_text = "🚫 BLOQUEAR CLIENTE" if u_info.get("status") == "active" else "🟢 DESBLOQUEAR CLIENTE"
@@ -7616,7 +7999,11 @@ async def _show_admin_user_detail(update: Update, context: ContextTypes.DEFAULT_
         [InlineKeyboardButton("✍️ EDITAR TELÉFONO", callback_data=f"admin_edit_field:{uid}:company_phone")],
         [InlineKeyboardButton("📸 ESCANEAR RIF (FOTO)", callback_data=f"admin_scan_rif:{uid}")],
         [InlineKeyboardButton("🖊️ CARGAR FIRMA Y SELLO", callback_data=f"admin_upload_sig:{uid}")],
-        [InlineKeyboardButton("🔢 GESTIONAR CORRELATIVOS", callback_data=f"admin_edit_field:{uid}:last_correlative")],
+        [InlineKeyboardButton("🔢 EDITAR RETENCIÓN", callback_data=f"admin_edit_field:{uid}:last_correlative")],
+        [
+            InlineKeyboardButton("📋 EDITAR COTIZACIÓN", callback_data=f"admin_edit_field:{uid}:next_cotizacion"),
+            InlineKeyboardButton("📦 EDITAR NOTA", callback_data=f"admin_edit_field:{uid}:next_nota")
+        ],
         [InlineKeyboardButton("🔍 REENVIAR COMPROBANTE", callback_data=f"admin_resend_auth:{uid}")],
         [InlineKeyboardButton("🔙 VOLVER A CLIENTES", callback_data="admin_list")]
     ]
@@ -7712,7 +8099,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 limit_ops=-1
             )
 
-            role_lbl = "Tributos Only" if role == "tributos_only" else ("Cotizaciones Only" if role == "cotizaciones_only" else "Nueva Empresa (FlashTax)" if role == "nueva_empresa" else "Acceso Total")
+            role_lbl = "Tributos Only" if role == "tributos_only" else ("Cotizaciones Only" if role == "cotizaciones_only" else "Tributos + Cotizaciones" if role == "tributos_and_cotizaciones" else "Nueva Empresa (FlashTax)" if role == "nueva_empresa" else "Acceso Total")
             plan_lbl = "Prueba (5 días)" if days == 5 else ("Plan Estándar (30 días)" if days == 30 else "Plan Premium (3 meses)")
 
             name_escaped = html.escape(name)
@@ -7746,23 +8133,64 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
         elif action == "admin_req_sufevica_start":
             kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏛️ Tributos Only", callback_data=f"admin_req_sufevica_role:{target_uid}:tributos_only")],
-                [InlineKeyboardButton("📋 Cotizaciones Only", callback_data=f"admin_req_sufevica_role:{target_uid}:cotizaciones_only")],
-                [InlineKeyboardButton("⭐ Acceso Total", callback_data=f"admin_req_sufevica_role:{target_uid}:full_access")],
+                [InlineKeyboardButton("⬜ 🏛️ Tributos (Ver/Reporte)", callback_data=f"admin_req_sufevica_toggle:{target_uid}:1:0")],
+                [InlineKeyboardButton("⬜ 📋 Cotizaciones", callback_data=f"admin_req_sufevica_toggle:{target_uid}:0:1")],
+                [InlineKeyboardButton("🟢 Continuar", callback_data=f"admin_req_sufevica_confirm:{target_uid}:0:0")],
                 [InlineKeyboardButton("❌ Rechazar Solicitud", callback_data=f"admin_req_reject:{target_uid}")]
             ])
             await msg.edit_text(
                 f"🛡️ *Autorizar Usuario SUFEVICA (ID: {target_uid})*\n\n"
                 f"El tiempo de uso es indefinido.\n\n"
-                f"Selecciona el nivel de autorización (rol):",
+                f"Selecciona las opciones del rol para el usuario y presiona Continuar:",
                 reply_markup=kb,
                 parse_mode="Markdown"
             )
             return
 
-        elif action == "admin_req_sufevica_role":
+        elif action == "admin_req_sufevica_toggle":
+            target_uid = parts[1]
+            tributos_val = int(parts[2])
+            cotizaciones_val = int(parts[3])
+            
+            trib_emoji = "✅" if tributos_val else "⬜"
+            coti_emoji = "✅" if cotizaciones_val else "⬜"
+            
+            next_trib_val = 0 if tributos_val else 1
+            next_coti_val = 0 if cotizaciones_val else 1
+            
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"{trib_emoji} 🏛️ Tributos (Ver/Reporte)", callback_data=f"admin_req_sufevica_toggle:{target_uid}:{next_trib_val}:{cotizaciones_val}")],
+                [InlineKeyboardButton(f"{coti_emoji} 📋 Cotizaciones", callback_data=f"admin_req_sufevica_toggle:{target_uid}:{tributos_val}:{next_coti_val}")],
+                [InlineKeyboardButton("🟢 Continuar", callback_data=f"admin_req_sufevica_confirm:{target_uid}:{tributos_val}:{cotizaciones_val}")],
+                [InlineKeyboardButton("❌ Rechazar Solicitud", callback_data=f"admin_req_reject:{target_uid}")]
+            ])
+            
+            await msg.edit_text(
+                f"🛡️ *Autorizar Usuario SUFEVICA (ID: {target_uid})*\n\n"
+                f"El tiempo de uso es indefinido.\n\n"
+                f"Selecciona las opciones del rol para el usuario y presiona Continuar:",
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+            return
+
+        elif action == "admin_req_sufevica_confirm":
             import html
-            role = parts[2]
+            target_uid = parts[1]
+            tributos_val = int(parts[2])
+            cotizaciones_val = int(parts[3])
+            
+            if not tributos_val and not cotizaciones_val:
+                await q.answer("⚠️ Selecciona al menos una opción para continuar.", show_alert=True)
+                return
+                
+            if tributos_val and cotizaciones_val:
+                role = "tributos_and_cotizaciones"
+            elif tributos_val:
+                role = "tributos_only"
+            else:
+                role = "cotizaciones_only"
+                
             try:
                 chat = await context.bot.get_chat(int(target_uid))
                 name = f"{chat.first_name} {chat.last_name or ''}".strip()
@@ -7779,7 +8207,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 limit_ops=-1
             )
 
-            role_lbl = "Tributos Only" if role == "tributos_only" else ("Cotizaciones Only" if role == "cotizaciones_only" else "Acceso Total")
+            role_lbl = "Tributos Only" if role == "tributos_only" else ("Cotizaciones Only" if role == "cotizaciones_only" else "Tributos + Cotizaciones")
             name_escaped = html.escape(name)
             username_escaped = html.escape(username_str)
             await msg.edit_text(
@@ -7935,7 +8363,15 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         parts = data.split(":")
         uid = parts[1]
         field = parts[2]
-        field_lbl = "Razón Social" if field == "company_name" else ("RIF" if field == "company_rif" else "Dirección Fiscal" if field == "company_address" else "Teléfono" if field == "company_phone" else "Último Correlativo")
+        field_lbl = (
+            "Razón Social" if field == "company_name" 
+            else "RIF" if field == "company_rif" 
+            else "Dirección Fiscal" if field == "company_address" 
+            else "Teléfono" if field == "company_phone" 
+            else "Siguiente Cotización" if field == "next_cotizacion"
+            else "Siguiente Nota de Entrega" if field == "next_nota"
+            else "Último Correlativo"
+        )
         
         context.user_data["admin_edit_target_uid"] = uid
         context.user_data["admin_edit_field"] = field
@@ -7975,7 +8411,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         u_info = user_manager.get_user(uid)
         if u_info:
             role = u_info.get("role")
-            role_lbl = "Tributos Only" if role == "tributos_only" else ("Cotizaciones Only" if role == "cotizaciones_only" else "Nueva Empresa (FlashTax)" if role == "nueva_empresa" else "Acceso Total")
+            role_lbl = "Tributos Only" if role == "tributos_only" else ("Cotizaciones Only" if role == "cotizaciones_only" else "Tributos + Cotizaciones" if role == "tributos_and_cotizaciones" else "Nueva Empresa (FlashTax)" if role == "nueva_empresa" else "Acceso Total")
             limit_ops = u_info.get("limit_ops", -1)
             plan_lbl = "Plan Estándar (100 ops)" if limit_ops == 100 else "Plan Premium" if limit_ops == -1 else "Prueba"
             exp_date = u_info.get("expiration_date", "never")
@@ -8010,23 +8446,83 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         
     elif data.startswith("admin_edit_role:"):
         uid = data.split(":")[1]
+        u_info = user_manager.get_user(uid)
+        if not u_info:
+            await q.answer("❌ Usuario no encontrado.", show_alert=True)
+            return
+            
+        current_role = u_info.get("role")
+        tributos_val = 1 if current_role in ("tributos_only", "tributos_and_cotizaciones", "full_access", "nueva_empresa") else 0
+        cotizaciones_val = 1 if current_role in ("cotizaciones_only", "tributos_and_cotizaciones", "full_access", "nueva_empresa") else 0
+        
+        trib_emoji = "✅" if tributos_val else "⬜"
+        coti_emoji = "✅" if cotizaciones_val else "⬜"
+        
+        next_trib_val = 0 if tributos_val else 1
+        next_coti_val = 0 if cotizaciones_val else 1
+        
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🏛️ Tributos Only", callback_data=f"admin_edit_role_set:{uid}:tributos_only")],
-            [InlineKeyboardButton("📋 Cotizaciones Only", callback_data=f"admin_edit_role_set:{uid}:cotizaciones_only")],
-            [InlineKeyboardButton("⭐ Acceso Total", callback_data=f"admin_edit_role_set:{uid}:full_access")],
+            [InlineKeyboardButton(f"{trib_emoji} 🏛️ Tributos (Ver/Reporte)", callback_data=f"admin_edit_role_toggle:{uid}:{next_trib_val}:{cotizaciones_val}")],
+            [InlineKeyboardButton(f"{coti_emoji} 📋 Cotizaciones", callback_data=f"admin_edit_role_toggle:{uid}:{tributos_val}:{next_coti_val}")],
+            [InlineKeyboardButton("🟢 Continuar", callback_data=f"admin_edit_role_confirm:{uid}:{tributos_val}:{cotizaciones_val}")],
             [InlineKeyboardButton("🔙 Atrás", callback_data=f"admin_edit:{uid}")]
         ])
-        await msg.edit_text("🛡️ *Seleccionar nuevo rol para el usuario:*", reply_markup=kb, parse_mode="Markdown")
+        await msg.edit_text(
+            f"🔄 *Modificar Rol del Usuario {uid}*\n\n"
+            f"Selecciona las opciones del rol para el usuario y presiona Continuar:",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
         return
-        
-    elif data.startswith("admin_edit_role_set:"):
+
+    elif data.startswith("admin_edit_role_toggle:"):
         parts = data.split(":")
         uid = parts[1]
-        new_role = parts[2]
+        tributos_val = int(parts[2])
+        cotizaciones_val = int(parts[3])
+        
+        trib_emoji = "✅" if tributos_val else "⬜"
+        coti_emoji = "✅" if cotizaciones_val else "⬜"
+        
+        next_trib_val = 0 if tributos_val else 1
+        next_coti_val = 0 if cotizaciones_val else 1
+        
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"{trib_emoji} 🏛️ Tributos (Ver/Reporte)", callback_data=f"admin_edit_role_toggle:{uid}:{next_trib_val}:{cotizaciones_val}")],
+            [InlineKeyboardButton(f"{coti_emoji} 📋 Cotizaciones", callback_data=f"admin_edit_role_toggle:{uid}:{tributos_val}:{next_coti_val}")],
+            [InlineKeyboardButton("🟢 Continuar", callback_data=f"admin_edit_role_confirm:{uid}:{tributos_val}:{cotizaciones_val}")],
+            [InlineKeyboardButton("🔙 Atrás", callback_data=f"admin_edit:{uid}")]
+        ])
+        await msg.edit_text(
+            f"🔄 *Modificar Rol del Usuario {uid}*\n\n"
+            f"Selecciona las opciones del rol para el usuario y presiona Continuar:",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
+        return
+
+    elif data.startswith("admin_edit_role_confirm:"):
+        parts = data.split(":")
+        uid = parts[1]
+        tributos_val = int(parts[2])
+        cotizaciones_val = int(parts[3])
+        
+        if not tributos_val and not cotizaciones_val:
+            await q.answer("⚠️ Selecciona al menos una opción para continuar.", show_alert=True)
+            return
+            
+        if tributos_val and cotizaciones_val:
+            new_role = "tributos_and_cotizaciones"
+        elif tributos_val:
+            new_role = "tributos_only"
+        else:
+            new_role = "cotizaciones_only"
+            
         user_manager.update_user_field(uid, "role", new_role)
         await q.answer(f"Rol cambiado a {new_role}")
-        q.data = f"admin_edit:{uid}"
-        await handle_admin_callback(update, context)
+        
+        # Redirigir de vuelta al detalle
+        await _show_admin_user_detail(update, context, uid, msg_to_edit=msg)
         return
         
     elif data.startswith("admin_edit_dur:"):
@@ -8146,7 +8642,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data.pop("admin_state", None)
         context.user_data.pop("admin_new_user", None)
         
-        role_lbl = "Cliente (FlashTax)" if new_u['role'] == "nueva_empresa" else ("Tributos Only" if new_u['role'] == "tributos_only" else "Cotizaciones Only" if new_u['role'] == "cotizaciones_only" else "Acceso Total")
+        role_lbl = "Cliente (FlashTax)" if new_u['role'] == "nueva_empresa" else ("Tributos Only" if new_u['role'] == "tributos_only" else "Cotizaciones Only" if new_u['role'] == "cotizaciones_only" else "Tributos + Cotizaciones" if new_u['role'] == "tributos_and_cotizaciones" else "Acceso Total")
         await msg.edit_text(
             f"✅ *Cliente `{new_u['name']}` registrado con éxito!*\n\n"
             f"• ID: `{new_u['id']}`\n"
@@ -8476,7 +8972,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(handle_cfg_company_callback, pattern=r"^cfg_company_"))
     app.add_handler(CallbackQueryHandler(handle_work_panel_callback, pattern=r"^work_panel:"))
     app.add_handler(CallbackQueryHandler(handle_history_callback, pattern=r"^history_"))
-
+    app.add_handler(CallbackQueryHandler(handle_replace_retention_callback, pattern=r"^rep_ret_"))
 
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))

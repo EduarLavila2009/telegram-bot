@@ -6,7 +6,9 @@
             "status": "active",
             "expiration_date": "never",
             "limit_ops": -1,
-            "consumed_ops": 0
+            "consumed_ops": 0,
+            "next_cotizacion": 22,
+            "next_nota": 12
         }
     }
 }

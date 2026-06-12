@@ -1008,6 +1008,86 @@ def append_retencion_emitida(
     wb.close()
 
 
+def _norm_comp(v: str | int | float | None) -> str:
+    if v is None:
+        return ""
+    return re.sub(r"[^A-Za-z0-9]", "", str(v)).strip().upper()
+
+
+def check_retencion_emitida_exists(base_dir: Path, numero_comprobante: str) -> tuple[Path, int, dict] | None:
+    if not base_dir.is_dir():
+        return None
+    comp_norm = _norm_comp(numero_comprobante)
+    if not comp_norm:
+        return None
+    for filepath in sorted(base_dir.glob("RETEN-EMIT-*.xlsx")):
+        wb = load_workbook(filepath, read_only=True, data_only=True)
+        try:
+            ws = wb.active
+            headers = _headers_index(ws)
+            for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
+                cell_val = _cell(row, headers, "Numero_comprobante", None)
+                if cell_val is not None and _norm_comp(cell_val) == comp_norm:
+                    row_data = {}
+                    for col_name in headers:
+                        row_data[col_name] = _cell(row, headers, col_name, None)
+                    return filepath, idx, row_data
+        except Exception:
+            pass
+        finally:
+            wb.close()
+    return None
+
+
+def delete_retencion_emitida_row(path: Path, row_idx: int) -> None:
+    if not path.exists():
+        return
+    wb = load_workbook(path)
+    try:
+        ws = wb.active
+        ws.delete_rows(row_idx)
+        wb.save(path)
+    finally:
+        wb.close()
+
+
+def check_retencion_islr_exists(base_dir: Path, numero_comprobante: str) -> tuple[Path, int, dict] | None:
+    if not base_dir.is_dir():
+        return None
+    comp_norm = _norm_comp(numero_comprobante)
+    if not comp_norm:
+        return None
+    for filepath in sorted(base_dir.glob("RETEN-ISLR-*.xlsx")):
+        wb = load_workbook(filepath, read_only=True, data_only=True)
+        try:
+            ws = wb.active
+            headers = _headers_index(ws)
+            for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
+                cell_val = _cell(row, headers, "Numero_comprobante", None)
+                if cell_val is not None and _norm_comp(cell_val) == comp_norm:
+                    row_data = {}
+                    for col_name in headers:
+                        row_data[col_name] = _cell(row, headers, col_name, None)
+                    return filepath, idx, row_data
+        except Exception:
+            pass
+        finally:
+            wb.close()
+    return None
+
+
+def delete_retencion_islr_row(path: Path, row_idx: int) -> None:
+    if not path.exists():
+        return
+    wb = load_workbook(path)
+    try:
+        ws = wb.active
+        ws.delete_rows(row_idx)
+        wb.save(path)
+    finally:
+        wb.close()
+
+
 RETENCION_ISLR_HEADERS = [
     "Numero_comprobante",
     "Fecha_emision",
