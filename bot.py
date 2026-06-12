@@ -183,6 +183,7 @@ SUBMENU_RETENCION_RECIBIDA = "🧾 Retenciones Recibidas"
 SUBMENU_REPORTE_Z = "📊 Reportes Z"
 SUBMENU_FACTURA_EMITIDA = "📈 Facturas Emitidas"
 SUBMENU_GENERAR_RETENCION = "✍️ Generar Retención"
+SUBMENU_ELIMINAR_RETENCION = "❌ Eliminar Retención"
 SUBMENU_GENERAR_REPORTES = "📋 Generar Reportes"
 SUBMENU_VOLVER = "🔙 Volver al Menú Principal"
 
@@ -260,7 +261,8 @@ def _tributos_submenu_keyboard(user_id: int | str = "") -> ReplyKeyboardMarkup:
         kb_layout = [
             [KeyboardButton(SUBMENU_CARGAR_FACTURA), KeyboardButton(SUBMENU_RETENCION_RECIBIDA)],
             [KeyboardButton(SUBMENU_REPORTE_Z), KeyboardButton(SUBMENU_FACTURA_EMITIDA)],
-            [KeyboardButton(SUBMENU_GENERAR_RETENCION), KeyboardButton(SUBMENU_GENERAR_REPORTES)],
+            [KeyboardButton(SUBMENU_GENERAR_RETENCION), KeyboardButton(SUBMENU_ELIMINAR_RETENCION)],
+            [KeyboardButton(SUBMENU_GENERAR_REPORTES)],
             [KeyboardButton(SUBMENU_VOLVER)],
         ]
     return ReplyKeyboardMarkup(
@@ -4992,7 +4994,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         context.user_data.get("awaiting_emit_docs") is not None or
         context.user_data.get("admin_state") is not None or
         context.user_data.get("share_doc") is not None or
-        context.user_data.get("awaiting_reprint_num") is not None
+        context.user_data.get("awaiting_reprint_num") is not None or
+        context.user_data.get("awaiting_delete_ret_num") is not None
     )
 
     # Procesar siempre publicaciones de canal y además chat SUFEVICA detectado, si no hay un flujo activo.
@@ -5046,6 +5049,40 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             doc_name_es = doc_names_es.get(doc_type, "Documento")
             await msg.reply_text(
                 f"❌ No encontré el archivo físico del documento de tipo *{doc_name_es}* con número `{user_input}` en el servidor.",
+                parse_mode="Markdown"
+            )
+        return
+
+    # Interceptar entradas de texto del usuario para eliminación de retención
+    if context.user_data.get("awaiting_delete_ret_num"):
+        ret_type = context.user_data.pop("awaiting_delete_ret_num")
+        user_input = text.strip()
+        
+        # Validar existencia
+        if ret_type == "iva":
+            dup_info = excel_store.check_retencion_emitida_exists(ctx.retenciones_emitidas_dir, user_input)
+            label = "IVA"
+        else:
+            dup_info = excel_store.check_retencion_islr_exists(ctx.retenciones_islr_dir, user_input)
+            label = "ISLR"
+            
+        if dup_info:
+            kb = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("🔥 Sí, eliminar", callback_data=f"delete_ret_confirm:{ret_type}:{user_input}"),
+                    InlineKeyboardButton("❌ Cancelar", callback_data="delete_ret_cancel")
+                ]
+            ])
+            await msg.reply_text(
+                f"⚠️ *ADVERTENCIA DE ELIMINACIÓN* ⚠️\n\n"
+                f"¿Estás seguro de que deseas eliminar permanentemente el comprobante de *{label}* Nro `{user_input}`?\n"
+                f"Esta acción es irreversible y restablecerá los documentos involucrados a estatus pendiente.",
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
+        else:
+            await msg.reply_text(
+                f"❌ No encontré ningún comprobante de retención de *{label}* con número `{user_input}` en los registros.",
                 parse_mode="Markdown"
             )
         return
@@ -5398,6 +5435,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 "a las cuales les deseas emitir el comprobante (ej: `00007553` o `00007553|00007554`):"
             )
             context.user_data["awaiting_emit_docs"] = True
+        elif text == SUBMENU_ELIMINAR_RETENCION:
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✍️ Retención de IVA", callback_data="delete_ret_sel:iva")],
+                [InlineKeyboardButton("🏛️ Retención de ISLR", callback_data="delete_ret_sel:islr")],
+                [InlineKeyboardButton("❌ Cancelar", callback_data="delete_ret_cancel")]
+            ])
+            await msg.reply_text(
+                "🗑️ *Eliminar Comprobante de Retención*\n\n"
+                "Selecciona el tipo de retención que deseas eliminar:",
+                reply_markup=kb,
+                parse_mode="Markdown"
+            )
         return
 
     elif text == SUBMENU_GENERAR_REPORTES:
@@ -7930,6 +7979,66 @@ async def handle_tributos_callback(
     if not msg:
         return
         
+    if data.startswith("delete_ret_sel:"):
+        ret_type = data.split(":", 1)[1]
+        context.user_data["awaiting_delete_ret_num"] = ret_type
+        
+        sample = "20260600000381" if ret_type == "iva" else "20260600000002"
+        lbl = "IVA" if ret_type == "iva" else "ISLR"
+        
+        await msg.edit_text(
+            f"✏️ *Eliminar Retención de {lbl}*\n\n"
+            f"Por favor, escribe y envía el número de comprobante que deseas eliminar (ej: `{sample}`):",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancelar", callback_data="delete_ret_cancel")]])
+        )
+        return
+        
+    elif data == "delete_ret_cancel":
+        context.user_data.pop("awaiting_delete_ret_num", None)
+        await msg.edit_text(
+            "❌ Operación cancelada. El comprobante no ha sido modificado."
+        )
+        return
+        
+    elif data.startswith("delete_ret_confirm:"):
+        parts = data.split(":")
+        if len(parts) < 3:
+            return
+        ret_type = parts[1]
+        num_comp = parts[2]
+        
+        ctx = _get_company_context(update)
+        
+        if ret_type == "iva":
+            dup_info = excel_store.check_retencion_emitida_exists(ctx.retenciones_emitidas_dir, num_comp)
+            if dup_info:
+                path, row_idx, _ = dup_info
+                excel_store.delete_retencion_emitida_row(path, row_idx)
+                logger.info(f"Admin deleted IVA retention {num_comp} from {path} row {row_idx}")
+                await msg.edit_text(
+                    f"✅ *Comprobante de IVA Nro {num_comp} eliminado con éxito.*\n\n"
+                    f"Cualquier factura asociada ha sido devuelta al listado de pendientes.",
+                    parse_mode="Markdown"
+                )
+            else:
+                await msg.edit_text(f"❌ El comprobante de IVA {num_comp} ya no existe en los registros.")
+                
+        elif ret_type == "islr":
+            dup_info = excel_store.check_retencion_islr_exists(ctx.retenciones_islr_dir, num_comp)
+            if dup_info:
+                path, row_idx, _ = dup_info
+                excel_store.delete_retencion_islr_row(path, row_idx)
+                logger.info(f"Admin deleted ISLR retention {num_comp} from {path} row {row_idx}")
+                await msg.edit_text(
+                    f"✅ *Comprobante de ISLR Nro {num_comp} eliminado con éxito.*\n\n"
+                    f"El registro ha sido removido de forma permanente.",
+                    parse_mode="Markdown"
+                )
+            else:
+                await msg.edit_text(f"❌ El comprobante de ISLR {num_comp} ya no existe en los registros.")
+        return
+
     if data.startswith("tributos_period_"):
         parts = data.split("_")
         y = int(parts[2])
