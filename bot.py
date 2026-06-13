@@ -4358,17 +4358,21 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                                 
                         pending_doc["temp_search_results"] = products[:8]
                         kb_list = []
+                        prod_list_str = ""
                         for idx, p in enumerate(products[:8]):
-                            btn_text = f"[{p['code']}] {p['description'][:25]} (${p['price']:.2f})"
+                            desc_trunc = p['description'][:45] + ("..." if len(p['description']) > 45 else "")
+                            btn_text = f"{idx+1}. [{p['code']}] {desc_trunc} (${p['price']:.2f})"
                             kb_list.append([InlineKeyboardButton(btn_text, callback_data=f"coti_build_select_p:{idx}")])
+                            prod_list_str += f"*{idx+1}.* `[{p['code']}]` {p['description']} - *${p['price']:.2f}*\n"
                         kb_list.append([
                             InlineKeyboardButton("📸 Escanear de Nuevo", callback_data="coti_build_search_barcode" if mode == "search_barcode" else "coti_build_search_ocr"),
                             InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")
                         ])
                         kb = InlineKeyboardMarkup(kb_list)
                         prompt = await msg.reply_text(
-                            f"🔍 *Múltiples coincidencias encontradas para \"{html.escape(query_val)}\" ({len(products)}):*\n"
-                            f"Por favor, selecciona el producto exacto de abajo:",
+                            f"🔍 *Múltiples coincidencias encontradas para \"{html.escape(query_val)}\" ({len(products)}):*\n\n"
+                            f"{prod_list_str}\n"
+                            f"Por favor, selecciona el producto exacto de la lista de abajo:",
                             reply_markup=kb,
                             parse_mode="Markdown"
                         )
@@ -6024,16 +6028,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     pending_doc["awaiting"] = "select_product"
                     pending_doc["temp_search_results"] = products[:8]
                     kb_list = []
+                    prod_list_str = ""
                     for idx, p in enumerate(products[:8]):
-                        btn_text = f"[{p['code']}] {p['description'][:25]} (${p['price']:.2f})"
+                        desc_trunc = p['description'][:45] + ("..." if len(p['description']) > 45 else "")
+                        btn_text = f"{idx+1}. [{p['code']}] {desc_trunc} (${p['price']:.2f})"
                         kb_list.append([InlineKeyboardButton(btn_text, callback_data=f"coti_build_select_p:{idx}")])
+                        prod_list_str += f"*{idx+1}.* `[{p['code']}]` {p['description']} - *${p['price']:.2f}*\n"
                     kb_list.append([
                         InlineKeyboardButton("🔍 Buscar de Nuevo", callback_data="coti_build_search_code"),
                         InlineKeyboardButton("🔙 Volver al Constructor", callback_data="coti_build_main")
                     ])
                     kb = InlineKeyboardMarkup(kb_list)
                     prompt = await msg.reply_text(
-                        f"🔍 *Múltiples coincidencias encontradas ({len(products)}):*\n"
+                        f"🔍 *Múltiples coincidencias encontradas ({len(products)}):*\n\n"
+                        f"{prod_list_str}\n"
                         f"Por favor, selecciona el producto exacto de la lista de abajo:",
                         reply_markup=kb,
                         parse_mode="Markdown"
@@ -6075,9 +6083,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 pending_doc["awaiting"] = "select_product"
                 pending_doc["temp_search_results"] = products[:8]
                 kb_list = []
+                prod_list_str = ""
                 for idx, p in enumerate(products[:8]):
-                    btn_text = f"[{p['code']}] {p['description'][:25]} (${p['price']:.2f})"
+                    desc_trunc = p['description'][:45] + ("..." if len(p['description']) > 45 else "")
+                    btn_text = f"{idx+1}. [{p['code']}] {desc_trunc} (${p['price']:.2f})"
                     kb_list.append([InlineKeyboardButton(btn_text, callback_data=f"coti_build_select_p:{idx}")])
+                    prod_list_str += f"*{idx+1}.* `[{p['code']}]` {p['description']} - *${p['price']:.2f}*\n"
                     
                 extra_text = ""
                 if len(products) > 8:
@@ -6091,6 +6102,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 prompt = await msg.reply_text(
                     f"🔎 *Productos que coinciden con su búsqueda:*\n\n"
                     f"{extra_text}"
+                    f"{prod_list_str}\n"
                     f"Por favor, selecciona el producto exacto de la lista de abajo:",
                     reply_markup=kb,
                     parse_mode="Markdown"
