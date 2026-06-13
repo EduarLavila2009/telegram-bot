@@ -14,7 +14,7 @@
             "name": "Freddy Lopez Digitel",
             "role": "nueva_empresa",
             "status": "active",
-            "expiration_date": "never",
+            "expiration_date": "2026-09-12",
             "limit_ops": -1,
             "consumed_ops": 0,
             "next_cotizacion": 1,
