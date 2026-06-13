@@ -5619,7 +5619,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         SUBMENU_VOLVER, REPORT_VOLVER_TRIBUTOS, VOICE_BUTTON, VOICE_CANCEL_BUTTON,
         SUBMENU_CARGAR_FACTURA, SUBMENU_RETENCION_RECIBIDA, SUBMENU_REPORTE_Z,
         SUBMENU_FACTURA_EMITIDA, SUBMENU_GENERAR_RETENCION, SUBMENU_GENERAR_REPORTES,
-        REPORT_IVA_BUTTON, REPORT_RETENCIONES_BUTTON, REPORT_FACTURAS_BUTTON, REPORT_PENDIENTES_BUTTON
+        REPORT_IVA_BUTTON, REPORT_RETENCIONES_BUTTON, REPORT_FACTURAS_BUTTON, REPORT_PENDIENTES_BUTTON,
+        SUBMENU_ELIMINAR_RETENCION
     }:
         context.user_data.pop("pending_doc", None)
         context.user_data.pop("awaiting_emit_docs", None)
@@ -5821,7 +5822,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    elif text in (SUBMENU_CARGAR_FACTURA, SUBMENU_RETENCION_RECIBIDA, SUBMENU_REPORTE_Z, SUBMENU_FACTURA_EMITIDA, SUBMENU_GENERAR_RETENCION):
+    elif text in (SUBMENU_CARGAR_FACTURA, SUBMENU_RETENCION_RECIBIDA, SUBMENU_REPORTE_Z, SUBMENU_FACTURA_EMITIDA, SUBMENU_GENERAR_RETENCION, SUBMENU_ELIMINAR_RETENCION):
         if not _check_permission(update, "tributos"):
             await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
             return
