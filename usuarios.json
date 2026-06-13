@@ -9,6 +9,22 @@
             "consumed_ops": 0,
             "next_cotizacion": 22,
             "next_nota": 12
+        },
+        "8944002846": {
+            "name": "Freddy Lopez Digitel",
+            "role": "nueva_empresa",
+            "status": "active",
+            "expiration_date": "never",
+            "limit_ops": -1,
+            "consumed_ops": 0,
+            "next_cotizacion": 1,
+            "next_nota": 1,
+            "company_name": "FlashTax",
+            "company_rif": "J-00000000-0",
+            "company_type": "Especial",
+            "company_email": "",
+            "company_phone": "",
+            "company_address": ""
         }
     }
 }

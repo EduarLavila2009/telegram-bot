@@ -1854,6 +1854,35 @@ async def check_and_sync_files(context: ContextTypes.DEFAULT_TYPE) -> None:
             key = f"dynamic_islr_{path.name.lower()}"
             files_to_sync.append((key, path, path.name))
             
+    # Archivos de empresas custom (Premium)
+    try:
+        users_data = user_manager.load_users().get("users", {})
+        for uid, u_info in users_data.items():
+            if u_info.get("role") == "nueva_empresa":
+                c_ctx = CompanyContext(uid)
+                # Archivos base de la empresa custom
+                for base_key, filename in SYNC_FILES.items():
+                    if base_key == "usuarios":
+                        continue
+                    path = get_sync_file_path(base_key, uid)
+                    if path and path.exists():
+                        # Usar prefijo único para evitar colisiones
+                        key = f"company_{uid}_{base_key}"
+                        files_to_sync.append((key, path, f"company_{uid}_{filename}"))
+                
+                # Archivos dinámicos de la empresa custom
+                if c_ctx.retenciones_emitidas_dir.is_dir():
+                    for path in c_ctx.retenciones_emitidas_dir.glob("RETEN-EMIT-*.xlsx"):
+                        key = f"company_{uid}_dynamic_emit_{path.name.lower()}"
+                        files_to_sync.append((key, path, f"company_{uid}_{path.name}"))
+                        
+                if c_ctx.retenciones_islr_dir.is_dir():
+                    for path in c_ctx.retenciones_islr_dir.glob("RETEN-ISLR-*.xlsx"):
+                        key = f"company_{uid}_dynamic_islr_{path.name.lower()}"
+                        files_to_sync.append((key, path, f"company_{uid}_{path.name}"))
+    except Exception as e:
+        logger.error(f"Error al listar archivos de empresas para sincronizar: {e}")
+            
     for key, path, filename in files_to_sync:
         if not path or not path.exists():
             continue
@@ -1898,9 +1927,56 @@ async def restore_files_from_backup(bot) -> None:
         logger.info("No se encontró ningún respaldo fijado. Iniciando con archivos locales actuales.")
         return
     logger.info("Restaurando archivos de Excel desde el respaldo de Telegram...")
+    
+    # 1. Restaurar usuarios.json primero
+    usuarios_path = get_sync_file_path("usuarios")
+    if "usuarios" in current_state and usuarios_path:
+        try:
+            logger.info("Descargando usuarios.json desde Telegram...")
+            tg_file = await bot.get_file(current_state["usuarios"])
+            usuarios_path.parent.mkdir(parents=True, exist_ok=True)
+            await tg_file.download_to_drive(custom_path=str(usuarios_path))
+            logger.info("usuarios.json restaurado con éxito.")
+            _last_mtime_cache["usuarios"] = os.path.getmtime(usuarios_path)
+        except Exception as e:
+            logger.error(f"Error descargando respaldo de usuarios.json: {e}")
+
+    # 2. Restaurar el resto de archivos
     ctx = CompanyContext(None)
     for key, file_id in current_state.items():
-        if key.startswith("dynamic_emit_"):
+        if key == "usuarios":
+            continue
+            
+        path = None
+        if key.startswith("company_"):
+            # Formato: company_{uid}_{base_key} o company_{uid}_dynamic_emit_{filename}
+            parts = key.split("_")
+            if len(parts) >= 3:
+                uid = parts[1]
+                sub_key = "_".join(parts[2:])
+                c_ctx = CompanyContext(uid)
+                if sub_key == "reten_rec":
+                    path = c_ctx.excel_path
+                elif sub_key == "facturas_recibidas":
+                    path = c_ctx.facturas_recibidas_path
+                elif sub_key == "facturas_emitidas":
+                    path = c_ctx.facturas_emitidas_path
+                elif sub_key == "reportes_z":
+                    path = c_ctx.reportes_z_path
+                elif sub_key == "productos":
+                    path = c_ctx.productos_path
+                elif sub_key.startswith("dynamic_emit_"):
+                    filename = sub_key[len("dynamic_emit_"):]
+                    path = c_ctx.retenciones_emitidas_dir / filename
+                elif sub_key.startswith("dynamic_islr_"):
+                    filename = sub_key[len("dynamic_islr_"):]
+                    path = c_ctx.retenciones_islr_dir / filename
+                else:
+                    continue
+                filename = path.name
+            else:
+                continue
+        elif key.startswith("dynamic_emit_"):
             filename = key[len("dynamic_emit_"):]
             path = ctx.retenciones_emitidas_dir / filename
         elif key.startswith("dynamic_islr_"):
@@ -1912,6 +1988,9 @@ async def restore_files_from_backup(bot) -> None:
                 continue
             filename = SYNC_FILES.get(key, path.name)
             
+        if not path:
+            continue
+            
         try:
             logger.info(f"Descargando {filename} desde Telegram...")
             tg_file = await bot.get_file(file_id)
@@ -1920,7 +1999,7 @@ async def restore_files_from_backup(bot) -> None:
             logger.info(f"Archivo {filename} restaurado con éxito.")
             _last_mtime_cache[key] = os.path.getmtime(path)
         except Exception as e:
-            logger.error(f"Error descargando respaldo de {filename}: {e}")
+            logger.error(f"Error descargando respaldo de {filename} (clave: {key}): {e}")
 
 async def post_init(application: Application) -> None:
     # 1. Restaurar archivos desde el respaldo de Telegram al iniciar
