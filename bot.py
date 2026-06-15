@@ -3272,19 +3272,21 @@ async def _process_intent(
                 )
                 return
                 
+            doc_desc = "La nota de crédito" if fc.tipo_documento == "Nota de Credito" else "La nota de débito" if fc.tipo_documento == "Nota de Debito" else "La factura recibida"
+            doc_desc_succ = fc.tipo_documento if fc.tipo_documento in ("Nota de Credito", "Nota de Debito") else "Factura recibida"
+
             if not inserted:
                 await _notify_same_source_channel(
                     update,
                     context,
-                    f"⚠️ La factura recibida Nro {fc.numero_documento} del proveedor {fc.proveedor or ''} ({fc.proveedor_rif or ''}) ya se encuentra registrada; no se agregó de nuevo.",
+                    f"⚠️ {doc_desc} Nro {fc.numero_documento} del proveedor {fc.proveedor or ''} ({fc.proveedor_rif or ''}) ya se encuentra registrada; no se agregó de nuevo.",
                 )
                 return
                 
             await _notify_same_source_channel(
                 update,
                 context,
-                "✅ Datos registrados correctamente en "
-                f"{ctx.facturas_recibidas_path.name} (Doc {fc.numero_documento or '—'}).",
+                f"✅ {doc_desc_succ} Nro {fc.numero_documento} registrada correctamente en {ctx.facturas_recibidas_path.name}.",
             )
             return
 

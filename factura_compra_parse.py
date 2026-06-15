@@ -237,6 +237,36 @@ def parse_factura_compra_text(text: str) -> FacturaCompraParsed | None:
         )
         or ""
     )
+
+    nro_nota_cred_raw = (
+        _take_eol_label(
+            text,
+            (
+                "numero de nota de credito",
+                "número de nota de crédito",
+                "nro de nota de credito",
+                "nota de credito",
+                "nota de crédito",
+            ),
+        )
+        or ""
+    )
+    nro_nota_cred = re.sub(r"\s+", "", nro_nota_cred_raw).strip()
+
+    nro_nota_deb_raw = (
+        _take_eol_label(
+            text,
+            (
+                "numero de nota de debito",
+                "número de nota de débito",
+                "nro de nota de debito",
+                "nota de debito",
+                "nota de débito",
+            ),
+        )
+        or ""
+    )
+    nro_nota_deb = re.sub(r"\s+", "", nro_nota_deb_raw).strip()
     nro_ctrl_raw = (
         _take_eol_label(
             text,
@@ -399,9 +429,27 @@ def parse_factura_compra_text(text: str) -> FacturaCompraParsed | None:
             "documento afectado",
             "factura que modifica",
             "afectada",
+            "factura aplica o afecta",
+            "aplica o afecta",
+            "aplica",
         ),
     ) or ""
     fact_afec = re.sub(r"\s+", "", fact_afec_raw).strip().upper()
+
+    tipo_doc = "Factura recibida / compra"
+    if nro_nota_cred:
+        tipo_doc = "Nota de Credito"
+        if not nro_doc:
+            nro_doc = nro_nota_cred
+    elif nro_nota_deb:
+        tipo_doc = "Nota de Debito"
+        if not nro_doc:
+            nro_doc = nro_nota_deb
+    elif fact_afec:
+        if "debito" in text.lower() or "débito" in text.lower():
+            tipo_doc = "Nota de Debito"
+        else:
+            tipo_doc = "Nota de Credito"
 
     # Permite guardar textos parciales del canal siempre que haya algún identificador/monto:
     # - número de documento o
@@ -411,7 +459,7 @@ def parse_factura_compra_text(text: str) -> FacturaCompraParsed | None:
         return None
 
     return FacturaCompraParsed(
-        tipo_documento="Factura recibida / compra",
+        tipo_documento=tipo_doc,
         fecha_emision=fecha_emi,
         fecha_vencimiento=fecha_venc,
         numero_documento=nro_doc.strip(),
