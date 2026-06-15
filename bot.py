@@ -9705,7 +9705,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("descargar_excel", descargar_excel_cmd))
     app.add_handler(CallbackQueryHandler(handle_admin_callback, pattern=r"^admin_"))
     app.add_handler(CallbackQueryHandler(handle_emit_retention_callback, pattern=r"^emit_"))
-    app.add_handler(CallbackQueryHandler(handle_tributos_callback, pattern=r"^tributos_"))
+    app.add_handler(CallbackQueryHandler(handle_tributos_callback, pattern=r"^(tributos_|delete_ret_)"))
     app.add_handler(CallbackQueryHandler(handle_cotizaciones_edit_callback, pattern=r"^coti_edit_"))
     app.add_handler(CallbackQueryHandler(handle_cotizaciones_callback, pattern=r"^coti_curr_"))
     app.add_handler(CallbackQueryHandler(handle_builder_callback, pattern=r"^coti_build_"))
