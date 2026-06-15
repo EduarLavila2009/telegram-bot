@@ -178,6 +178,7 @@ class FacturaCompraParsed:
     contribuyente_tipo: str = ""
     tasa_cambio: str = ""
     moneda_original: str = "VES"
+    factura_afectada: str = ""
 
 
 def parse_factura_compra_text(text: str) -> FacturaCompraParsed | None:
@@ -391,6 +392,17 @@ def parse_factura_compra_text(text: str) -> FacturaCompraParsed | None:
     iva = _fmt_money_label(iva_raw)
     tot = _fmt_money_label(total_raw)
 
+    fact_afec_raw = _take_eol_label(
+        text,
+        (
+            "factura afectada",
+            "documento afectado",
+            "factura que modifica",
+            "afectada",
+        ),
+    ) or ""
+    fact_afec = re.sub(r"\s+", "", fact_afec_raw).strip().upper()
+
     # Permite guardar textos parciales del canal siempre que haya algún identificador/monto:
     # - número de documento o
     # - total/subtotal/base/iva o
@@ -415,4 +427,5 @@ def parse_factura_compra_text(text: str) -> FacturaCompraParsed | None:
         base_imponible=base,
         monto_iva=iva,
         total=tot,
+        factura_afectada=fact_afec,
     )

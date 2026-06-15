@@ -42,6 +42,7 @@ FACTURA_COMPRA_HEADERS = [
     "Base_imponible",
     "Monto_IVA",
     "Total",
+    "Factura_afectada",
     "Fecha_registro",
     "Texto_resumen",
 ]
@@ -97,17 +98,32 @@ class FacturaCompraRow:
     base_imponible: Decimal | None
     monto_iva: Decimal | None
     total: Decimal | None
+    factura_afectada: str = ""
 
 
 def ensure_factura_compra_workbook(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
+    if not path.exists():
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Facturas_compra"
+        ws.append(FACTURA_COMPRA_HEADERS)
+        wb.save(path)
         return
-    wb = Workbook()
+
+    # Si existe, verificar cabeceras y añadir columnas faltantes
+    wb = load_workbook(path)
     ws = wb.active
-    ws.title = "Facturas_compra"
-    ws.append(FACTURA_COMPRA_HEADERS)
-    wb.save(path)
+    headers = _headers_index(ws)
+    missing = [h for h in FACTURA_COMPRA_HEADERS if h not in headers]
+    if missing:
+        # Añadir al final de la fila de cabecera
+        last_col = ws.max_column
+        for h in missing:
+            last_col += 1
+            ws.cell(row=1, column=last_col, value=h)
+        wb.save(path)
+    wb.close()
 
 
 def _excel_numeric_cell(s: str) -> float | str:
@@ -172,6 +188,10 @@ def _canonical_factura_header(cell_header: str) -> str | None:
         "total": "Total",
         "totalapagar": "Total",
         "totalbs": "Total",
+        "facturaafectada": "Factura_afectada",
+        "documentoafectado": "Factura_afectada",
+        "facturaquemodifica": "Factura_afectada",
+        "afectada": "Factura_afectada",
         "fechaderegistro": "Fecha_registro",
         "registro": "Fecha_registro",
         "textoresumen": "Texto_resumen",
@@ -200,6 +220,7 @@ def append_factura_compra(
     base_imponible: str,
     monto_iva: str,
     total: str,
+    factura_afectada: str = "",
     texto_resumen: str = "",
 ) -> bool:
     ensure_factura_compra_workbook(path)
@@ -261,6 +282,7 @@ def append_factura_compra(
         "Base_imponible": _excel_numeric_cell(base_imponible),
         "Monto_IVA": _excel_numeric_cell(monto_iva),
         "Total": _excel_numeric_cell(total),
+        "Factura_afectada": str(factura_afectada).strip(),
         "Fecha_registro": fecha_registro,
         "Texto_resumen": resumen_cell,
     }
@@ -707,14 +729,15 @@ def load_facturas_by_document_numbers(
     wb = load_workbook(path, read_only=True, data_only=True)
     ws = wb.active
     headers = _headers_index(ws)
-    out: list[FacturaCompraRow] = []
+    all_items: list[FacturaCompraRow] = []
     for row in ws.iter_rows(min_row=2, values_only=True):
         if not row:
             continue
         nro = _norm_doc(_cell(row, headers, "Numero_documento", "") or "")
-        if not nro or nro not in wanted:
+        if not nro:
             continue
-        out.append(
+        fact_afec = _norm_doc(_cell(row, headers, "Factura_afectada", "") or "")
+        all_items.append(
             FacturaCompraRow(
                 tipo_documento=str(_cell(row, headers, "Tipo_documento", "") or "").strip(),
                 fecha_emision=str(_cell(row, headers, "Fecha_emision", "") or "").strip(),
@@ -734,10 +757,24 @@ def load_facturas_by_document_numbers(
                 base_imponible=_parse_monto_cell(_cell(row, headers, "Base_imponible", None)),
                 monto_iva=_parse_monto_cell(_cell(row, headers, "Monto_IVA", None)),
                 total=_parse_monto_cell(_cell(row, headers, "Total", None)),
+                factura_afectada=fact_afec,
             )
         )
     wb.close()
-    return out
+
+    base_docs = [it for it in all_items if it.numero_documento in wanted]
+    base_numbers = {it.numero_documento for it in base_docs}
+
+    related_notes: list[FacturaCompraRow] = []
+    for it in all_items:
+        if it.numero_documento in base_numbers:
+            continue
+        tipo_l = it.tipo_documento.lower()
+        is_note = "credito" in tipo_l or "crédito" in tipo_l or "debito" in tipo_l or "débito" in tipo_l
+        if is_note and it.factura_afectada in base_numbers:
+            related_notes.append(it)
+
+    return base_docs + related_notes
 
 
 def monthly_retencion_emitida_path(base_dir: Path, emission_date: date) -> Path:
@@ -1348,21 +1385,40 @@ def export_comprobante_emitido_excel(
         base = it.base_imponible or Decimal("0")
         iva = it.monto_iva or Decimal("0")
         ret = (iva * porcentaje_retencion).quantize(Decimal("0.01"))
-        ws.append(
-            [
-                it.numero_documento,
-                it.numero_control,
-                it.fecha_emision,
-                float(exento),
-                float(base),
-                float(iva),
-                float(ret),
-            ]
-        )
-        sum_exento += exento
-        sum_base += base
-        sum_iva += iva
-        sum_ret += ret
+        
+        is_credit = "credito" in it.tipo_documento.lower() or "crédito" in it.tipo_documento.lower()
+        if is_credit:
+            ws.append(
+                [
+                    it.numero_documento,
+                    it.numero_control,
+                    it.fecha_emision,
+                    -float(exento) if exento else 0.0,
+                    -float(base) if base else 0.0,
+                    -float(iva) if iva else 0.0,
+                    -float(ret) if ret else 0.0,
+                ]
+            )
+            sum_exento -= exento
+            sum_base -= base
+            sum_iva -= iva
+            sum_ret -= ret
+        else:
+            ws.append(
+                [
+                    it.numero_documento,
+                    it.numero_control,
+                    it.fecha_emision,
+                    float(exento),
+                    float(base),
+                    float(iva),
+                    float(ret),
+                ]
+            )
+            sum_exento += exento
+            sum_base += base
+            sum_iva += iva
+            sum_ret += ret
     ws.append([])
     ws.append(["Totales", "", "", float(sum_exento), float(sum_base), float(sum_iva), float(sum_ret)])
     wb.save(out_path)
@@ -1548,20 +1604,39 @@ def export_comprobante_emitido_pdf(
         c.line(x, row_y - 5, x + table_w, row_y - 5)
         if not it:
             continue
-        base = it.base_imponible or Decimal("0")
-        exento = it.monto_exento or Decimal("0")
-        iva = it.monto_iva or Decimal("0")
-        total = it.total or (base + iva)
-        ret = (iva * porcentaje_retencion).quantize(Decimal("0.01"))
+        base_val = it.base_imponible or Decimal("0")
+        exento_val = it.monto_exento or Decimal("0")
+        iva_val = it.monto_iva or Decimal("0")
+        total_val = it.total or (base_val + iva_val + exento_val)
+        ret_val = (iva_val * porcentaje_retencion).quantize(Decimal("0.01"))
+
+        tipo_l = it.tipo_documento.lower()
+        is_credit = "credito" in tipo_l or "crédito" in tipo_l
+        is_debit = "debito" in tipo_l or "débito" in tipo_l
+        sign = -1 if is_credit else 1
+
+        base = base_val * sign
+        exento = exento_val * sign
+        iva = iva_val * sign
+        total = total_val * sign
+        ret = ret_val * sign
+
+        num_doc = it.numero_documento
+        num_ctrl = it.numero_control or "-"
+        num_deb = num_doc if is_debit else ""
+        num_cred = num_doc if is_credit else ""
+        tipo_code = "03" if is_credit else "02" if is_debit else "01"
+        fact_afectada = it.factura_afectada if (is_credit or is_debit) else ""
+
         values = [
             f"{idx + 1:02d}",
             (it.fecha_emision or "-")[:10],
-            it.numero_documento[:12],
-            (it.numero_control or "-")[:12],
-            "",
-            "",
-            "C",
-            "",
+            "" if (is_credit or is_debit) else num_doc[:12],
+            num_ctrl[:12],
+            num_deb[:12],
+            num_cred[:12],
+            tipo_code,
+            fact_afectada[:12],
             _format_monto_ves(total),
             _format_monto_ves(exento),
             _format_monto_ves(base),
@@ -2138,4 +2213,23 @@ def search_products_in_excel(path: Path, query: str, search_by: str = "desc") ->
         wb.close()
         
     return results
+
+
+def get_sale_document_details(path: Path, doc_number: str) -> tuple[str, str] | None:
+    """Retorna (clasificacion, factura_afectada/dato_fiscal) si existe en facturas emitidas."""
+    if not path.exists():
+        return None
+    wb = load_workbook(path, read_only=True, data_only=True)
+    ws = wb.active
+    headers = _headers_index(ws)
+    doc_norm = re.sub(r"\s+", "", str(doc_number)).strip().upper()
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        nro = re.sub(r"\s+", "", str(_cell(row, headers, "Numero_documento", ""))).strip().upper()
+        if nro == doc_norm:
+            clasif = str(_cell(row, headers, "Clasificacion", "Factura")).strip()
+            dato_f = str(_cell(row, headers, "Dato_fiscal", "")).strip()
+            wb.close()
+            return clasif, dato_f
+    wb.close()
+    return None
 

@@ -884,8 +884,16 @@ def _totals_for_items(items: list[excel_store.FacturaCompraRow]) -> tuple[Decima
     base_total = Decimal("0")
     iva_total = Decimal("0")
     for it in items:
-        base_total += it.base_imponible or Decimal("0")
-        iva_total += it.monto_iva or Decimal("0")
+        tipo_l = it.tipo_documento.lower()
+        is_credit = "credito" in tipo_l or "crédito" in tipo_l
+        base = it.base_imponible or Decimal("0")
+        iva = it.monto_iva or Decimal("0")
+        if is_credit:
+            base_total -= base
+            iva_total -= iva
+        else:
+            base_total += base
+            iva_total += iva
     retenido = (iva_total * RETENTION_RATE).quantize(Decimal("0.01"))
     return base_total, iva_total, retenido
 async def _start_emitir_retencion_flow(
@@ -1059,7 +1067,17 @@ def _parse_venta_o_reportez(text: str) -> dict[str, str] | None:
     if not (is_venta or is_z):
         return None
         
-    clasif = "Reporte Z" if is_z else "Factura Emitida"
+    is_credit = "credito" in t_norm or "crédito" in t_norm
+    is_debit = "debito" in t_norm or "débito" in t_norm
+
+    if is_z:
+        clasif = "Reporte Z"
+    elif is_credit:
+        clasif = "Nota de Credito"
+    elif is_debit:
+        clasif = "Nota de Debito"
+    else:
+        clasif = "Factura Emitida"
     
     # 1. Intentar extracción con etiquetas estándar (con dos puntos o igual)
     fecha = _extract_labeled_value(t, ("fecha", "fecha_emision", "fecha emision"))
@@ -1069,6 +1087,11 @@ def _parse_venta_o_reportez(text: str) -> dict[str, str] | None:
     base = _extract_labeled_value(t, ("base", "base_imponible", "base imponible"))
     iva = _extract_labeled_value(t, ("iva", "impuesto"))
     total = _extract_labeled_value(t, ("total", "total_venta", "monto_total"))
+    factura_afectada = (
+        _extract_labeled_value(t, ("factura_afectada", "afectada", "factura afectada", "factura que modifica"))
+        or _extract_labeled_value_eol(t, ("factura afectada", "factura que modifica", "afectada"))
+        or ""
+    )
     
     if not fecha:
         fecha = _extract_labeled_value_eol(t, ("fecha", "fecha emision"))
@@ -1143,6 +1166,7 @@ def _parse_venta_o_reportez(text: str) -> dict[str, str] | None:
         "base_imponible": base or "",
         "iva": iva or "",
         "total": total or "",
+        "factura_afectada": factura_afectada.strip().upper(),
     }
 
 
@@ -3018,6 +3042,7 @@ async def _process_intent(
                     base_imponible=base_str,
                     iva=iva_str,
                     total=tot_str,
+                    dato_fiscal=v_data.get("factura_afectada", ""),
                     texto_origen=text,
                 )
         except Exception as e:
@@ -3127,6 +3152,7 @@ async def _process_intent(
                     base_imponible=fc.base_imponible,
                     monto_iva=fc.monto_iva,
                     total=fc.total,
+                    factura_afectada=getattr(fc, "factura_afectada", "") or "",
                     texto_resumen=(text[:420] + warn)[:500],
                 )
             except ValueError as e:
@@ -3439,7 +3465,7 @@ async def _emitir_retencion_generate(
         proveedor=provider,
         proveedor_rif=provider_rif,
         direccion_fiscal_prov=provider_address,
-        documentos="|".join(docs),
+        documentos="|".join(it.numero_documento for it in items),
         controles="|".join(str(it.numero_control or "") for it in items),
         base_imponible_total=base_total,
         iva_total=iva_total,
@@ -3924,7 +3950,8 @@ def _process_parsed_ocr_invoice(fc: object) -> dict:
         "tasa_cambio": tasa_usada,
         "rif_valido": rif_valido,
         "islr_rate": str(alicuota_sugerida),
-        "islr_concept": "Servicios en General (Jurídicos: 2%)" if alicuota_sugerida == Decimal("0.02") else "Honorarios Profesionales / Fletes (Jurídicos: 3%)" if alicuota_sugerida == Decimal("0.03") else "Publicidad, Propaganda y Comisiones (5%)" if alicuota_sugerida == Decimal("0.05") else "Compra de Mercancía / No sujeto"
+        "islr_concept": "Servicios en General (Jurídicos: 2%)" if alicuota_sugerida == Decimal("0.02") else "Honorarios Profesionales / Fletes (Jurídicos: 3%)" if alicuota_sugerida == Decimal("0.03") else "Publicidad, Propaganda y Comisiones (5%)" if alicuota_sugerida == Decimal("0.05") else "Compra de Mercancía / No sujeto",
+        "factura_afectada": getattr(fc, "factura_afectada", "") or "",
     }
 
 def _process_parsed_ocr_sale(fc: object, ctx) -> dict:
@@ -4011,6 +4038,7 @@ def _process_parsed_ocr_sale(fc: object, ctx) -> dict:
         "total": f"{total_val:.2f}",
         "tasa_cambio": tasa_usada,
         "rif_valido": rif_valido,
+        "factura_afectada": getattr(fc, "factura_afectada", "") or "",
     }
 
 def _process_parsed_ocr_reporte_z(z_data: dict) -> dict:
@@ -5030,6 +5058,7 @@ async def handle_ocr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                 base_imponible=pending["base_imponible"],
                 iva=pending["monto_iva"],
                 total=pending["total"],
+                dato_fiscal=pending.get("factura_afectada", ""),
                 texto_origen="Registrado desde OCR de foto.",
             )
             
@@ -5117,6 +5146,7 @@ async def handle_ocr_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
                 base_imponible=pending["base_imponible"],
                 monto_iva=pending["monto_iva"],
                 total=pending["total"],
+                factura_afectada=pending.get("factura_afectada", "") or "",
                 texto_resumen="Registrado desde OCR de foto.",
             )
             
@@ -6839,6 +6869,7 @@ async def _send_seniat_txt_telegram_async(
             year, month, fortnight,
             retenciones_emitidas_dir=ctx.retenciones_emitidas_dir,
             facturas_recibidas_path=ctx.facturas_recibidas_path,
+            facturas_emitidas_path=ctx.facturas_emitidas_path,
             excel_path=ctx.excel_path,
             emitter_rif=ctx.company_rif
         )

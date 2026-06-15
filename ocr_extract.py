@@ -148,7 +148,8 @@ Devuelve UNICAMENTE un JSON válido con estas claves exactas:
 - contribuyente_tipo (determina si el emisor es "Especial", "Ordinario" o "Formal" según las leyendas del documento, o vacío "")
 - tasa_cambio (tasa de cambio presente en el documento, ej: 39.58, o vacío "")
 - moneda_original (la moneda de los montos numéricos que colocas en las claves de arriba: "VES" para Bolívares o "USD" para Dólares)
-
+- factura_afectada (número de la factura original que es afectada o modificada por esta nota de crédito o débito, o vacío "")
+ 
 Reglas de Extracción de Montos y Moneda:
 1) Identifica claramente quién es el emisor/vendedor (proveedor) y quién es el receptor/cliente. Lee atentamente el membrete del documento comercial. No asumas que la empresa del usuario es siempre el receptor o el emisor; deduce los roles de forma inteligente a partir del membrete y datos fiscales.
 2) Si el documento contiene montos expresados en Dólares (USD) (ya sea como moneda principal, en una columna de doble columna, o de forma referencial), y posee una tasa de cambio o tasa BCV referencial anotada:
@@ -301,6 +302,7 @@ def extract_invoice_from_image(image: Image.Image) -> FacturaCompraParsed:
         contribuyente_tipo=_safe_str(data.get("contribuyente_tipo")),
         tasa_cambio=_safe_str(data.get("tasa_cambio")),
         moneda_original=_safe_str(data.get("moneda_original")) or "VES",
+        factura_afectada=_safe_str(data.get("factura_afectada")),
     )
 
 def extract_islr_from_image(image: Image.Image) -> dict:

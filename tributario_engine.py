@@ -455,9 +455,9 @@ def clean_rif(rif: str) -> str:
 def map_document_type(doc_type: str) -> str:
     """Mapea el tipo de documento de texto a códigos SENIAT (01=Factura, 02=N/D, 03=N/C)."""
     s = str(doc_type).strip().lower()
-    if "debito" in s:
+    if "debito" in s or "débito" in s or s == "nd" or s == "02":
         return "02"
-    elif "credito" in s:
+    elif "credito" in s or "crédito" in s or s == "nc" or s == "03":
         return "03"
     else:
         return "01"
@@ -522,6 +522,7 @@ def generate_seniat_txt_data(
     *,
     retenciones_emitidas_dir: Path | None = None,
     facturas_recibidas_path: Path | None = None,
+    facturas_emitidas_path: Path | None = None,
     excel_path: Path | None = None,
     emitter_rif: str | None = None,
 ) -> tuple[str, str]:
@@ -537,6 +538,7 @@ def generate_seniat_txt_data(
     
     # RIF del Agente de Retención (nuestra empresa)
     agent_rif = emitter_rif if emitter_rif is not None else config.EMITTER_RIF
+    f_emitidas = facturas_emitidas_path if facturas_emitidas_path is not None else config.FACTURAS_EMITIDAS_PATH
     
     # ----------------------------------------------------
     # 1. RETENCIONES EMITIDAS (Compras / Proveedores)
@@ -595,6 +597,7 @@ def generate_seniat_txt_data(
                             exento = item.monto_exento or Decimal("0")
                             total = item.total or (base + iva + exento)
                             iva_ret = (iva * porcentaje_retencion).quantize(Decimal("0.01"))
+                            doc_affected = item.factura_afectada or "0"
                         else:
                             # Fallback: Distribuir equitativamente
                             invoice_date_str = str(fecha_cell)
@@ -605,10 +608,11 @@ def generate_seniat_txt_data(
                             iva_ret = (iva_retenido_total / N).quantize(Decimal("0.01"))
                             exento = Decimal("0.00")
                             total = base + iva
+                            doc_affected = "0"
                             
                         alicuota = Decimal("16.00")
-                        if base > 0:
-                            alicuota = ((iva / base) * 100).quantize(Decimal("0.01"))
+                        if abs(base) > 0:
+                            alicuota = ((abs(iva) / abs(base)) * 100).quantize(Decimal("0.01"))
                             
                         line = format_seniat_txt_line(
                             agent_rif=agent_rif,
@@ -619,12 +623,12 @@ def generate_seniat_txt_data(
                             rif=proveedor_rif,
                             doc_num=doc_num,
                             control_num=control,
-                            total_amount=total,
-                            base_imponible=base,
-                            iva_retenido=iva_ret,
-                            doc_affected="0",
+                            total_amount=abs(total),
+                            base_imponible=abs(base),
+                            iva_retenido=abs(iva_ret),
+                            doc_affected=doc_affected,
                             comprobante_num=num_comprobante,
-                            exento=exento,
+                            exento=abs(exento),
                             alicuota=alicuota,
                         )
                         emitidas_lines.append(line)
@@ -682,25 +686,34 @@ def generate_seniat_txt_data(
                     iva = (base * Decimal("0.16")).quantize(Decimal("0.01"))
                     exento = max(Decimal("0.00"), total - base - iva)
                     
+                    # Buscar detalles del documento en ventas (FACTURAS-EMITIDAS.xlsx)
+                    doc_type = "01"
+                    doc_affected = "0"
+                    details = excel_store.get_sale_document_details(f_emitidas, doc_num)
+                    if details:
+                        clasif, dato_fiscal = details
+                        doc_type = map_document_type(clasif)
+                        doc_affected = dato_fiscal if (dato_fiscal and dato_fiscal != "0") else "0"
+                    
                     alicuota = Decimal("16.00")
-                    if base > 0:
-                        alicuota = ((iva / base) * 100).quantize(Decimal("0.01"))
+                    if abs(base) > 0:
+                        alicuota = ((abs(iva) / abs(base)) * 100).quantize(Decimal("0.01"))
                         
                     line = format_seniat_txt_line(
                         agent_rif=agent_rif,
                         periodo=periodo_fiscal,
                         invoice_date=inv_date_str,
                         operation_type="V",
-                        doc_type="01",
+                        doc_type=doc_type,
                         rif=rif,
                         doc_num=doc_num,
                         control_num=control,
-                        total_amount=total,
-                        base_imponible=base,
-                        iva_retenido=iva_ret,
-                        doc_affected="0",
+                        total_amount=abs(total),
+                        base_imponible=abs(base),
+                        iva_retenido=abs(iva_ret),
+                        doc_affected=doc_affected,
                         comprobante_num=numero_comprobante,
-                        exento=exento,
+                        exento=abs(exento),
                         alicuota=alicuota,
                     )
                     recibidas_lines.append(line)
