@@ -37,7 +37,10 @@ class CompanyContext:
         self.company_phone = ""
         self.company_address = ""
         self.color_primary = "#1A1B54" # Navy for SUFEVICA
-        self.dir_path = Path(__file__).resolve().parent
+        
+        # Usar /data si existe (volumen persistente en producción)
+        _db_root = Path("/data") if Path("/data").is_dir() else Path(__file__).resolve().parent
+        self.dir_path = _db_root
         
         # Default SUFEVICA paths
         self.excel_path = config.EXCEL_PATH
@@ -49,8 +52,8 @@ class CompanyContext:
         self.retenciones_emitidas_dir = config.RETENCIONES_EMITIDAS_DIR
         self.retenciones_islr_dir = config.RETENCIONES_ISLR_DIR
         self.firma_sello_path = config.FIRMA_SELLO_PATH
-        self.generados_dir = Path(__file__).resolve().parent / "modulo_cotizaciones" / "generados"
-        self.historico_json_path = Path(__file__).resolve().parent / "modulo_cotizaciones" / "historico_documentos.json"
+        self.generados_dir = _db_root / "modulo_cotizaciones" / "generados"
+        self.historico_json_path = _db_root / "modulo_cotizaciones" / "historico_documentos.json"
         
         if self.user_id:
             user = user_manager.get_user(self.user_id)
@@ -66,7 +69,7 @@ class CompanyContext:
                 self.color_primary = "#4F46E5" # Indigo for FlashTax
                 
                 # Custom paths under empresas/flashtax_<user_id>/
-                base_dir = Path(__file__).resolve().parent / "empresas" / self.company_id
+                base_dir = _db_root / "empresas" / self.company_id
                 self.dir_path = base_dir
                 
                 self.excel_path = base_dir / "RETEN-REC.xlsx"
@@ -133,7 +136,7 @@ logger = logging.getLogger(__name__)
 
 def _setup_logging() -> None:
     """Configura el logging para escribir tanto en la consola como en un archivo rotativo."""
-    log_dir = Path(__file__).resolve().parent
+    log_dir = Path("/data") if Path("/data").is_dir() else Path(__file__).resolve().parent
     log_file = log_dir / "bot.log"
     
     formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -1817,7 +1820,7 @@ def get_sync_file_path(key: str, user_id: int | str | None = None) -> Path | Non
     elif key == "productos":
         return ctx.productos_path
     elif key == "usuarios":
-        return Path(__file__).resolve().parent / "usuarios.json"
+        return user_manager.DB_PATH
     return None
 
 _last_mtime_cache = {}
@@ -7536,7 +7539,8 @@ async def _send_document_email_async(
 
 
 def _get_and_increment_correlativo(doc_type: str, user_id: int | str | None = None) -> str:
-    correlativos_path = Path(__file__).resolve().parent / "modulo_cotizaciones" / "correlativos.json"
+    _db_root = Path("/data") if Path("/data").is_dir() else Path(__file__).resolve().parent
+    correlativos_path = _db_root / "modulo_cotizaciones" / "correlativos.json"
     key = "next_cotizacion" if doc_type == "cotizacion" else "next_nota"
     num = None
     

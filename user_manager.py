@@ -5,7 +5,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path(__file__).resolve().parent / "usuarios.json"
+data_volume = Path("/data")
+DB_PATH = (data_volume / "usuarios.json") if data_volume.is_dir() else (Path(__file__).resolve().parent / "usuarios.json")
 
 
 def load_users() -> dict:

@@ -50,29 +50,29 @@ def _optional_int(name: str) -> int | None:
     return int(str(raw).strip())
 
 
+_DATA_DIR = Path("/data")
+_db_root = _DATA_DIR if _DATA_DIR.is_dir() else _base
+
+
 def _resolve_path_env(name: str, default_relative: str) -> Path:
     """
-    Resuelve rutas relativas a la carpeta raíz del bot (`_base`).
-
-    - Si la variable de entorno está vacía: usa `_base / default_relative`.
-    - Si la variable tiene una ruta relativa (ej. solo el nombre del archivo):
-      se interpreta relativa a `_base`.
-    - Si la variable tiene una ruta absoluta que ya no existe en disco:
-      se intenta `_base / nombre_del_archivo` y luego el valor por defecto.
-    - Si la ruta absoluta existe: se respeta.
+    Resuelve rutas relativas a la carpeta raíz de datos (`_db_root`).
     """
     raw = os.environ.get(name)
     if raw is None or not str(raw).strip():
-        return (_base / default_relative).expanduser()
+        return (_db_root / default_relative).expanduser()
     p = Path(str(raw).strip()).expanduser()
     if not p.is_absolute():
-        return (_base / p).expanduser()
+        return (_db_root / p).expanduser()
+    if _db_root == _DATA_DIR and not p.exists():
+        # Redirigir archivo absoluto no existente al volumen persistente /data
+        return (_DATA_DIR / p.name).expanduser()
     if p.exists():
         return p
-    by_name = _base / p.name
+    by_name = _db_root / p.name
     if by_name.exists():
         return by_name
-    fallback = (_base / default_relative).expanduser()
+    fallback = (_db_root / default_relative).expanduser()
     if fallback.exists():
         return fallback
     return p
