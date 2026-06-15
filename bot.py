@@ -2058,6 +2058,114 @@ async def descargar_excel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE
                 logger.error(f"Error al enviar {filename}: {e}")
     if not sent_any:
         await msg.reply_text("⚠️ No se encontraron archivos de Excel locales en el servidor.")
+
+
+def _create_backup_zip(zip_path: Path) -> bool:
+    import zipfile
+    _db_root = Path("/data") if Path("/data").is_dir() else Path(__file__).resolve().parent
+    
+    # Lista de archivos en la raíz a incluir si existen
+    root_files = [
+        "usuarios.json",
+        "RETEN-REC.xlsx",
+        "FACTURAS-RECIBIDAS-NUEVO.xlsx",
+        "FACTURAS-EMITIDAS.xlsx",
+        "REPORTES-Z-NUEVO.xlsx",
+        "inventario.xlsx",
+        "POR-REVISAR.xlsx",
+    ]
+    
+    # Directorios a incluir recursivamente
+    subdirs = [
+        "RETENCIONES-EMITIDAS-NUEVO",
+        "RETENCIONES-ISLR-EMITIDAS",
+        "modulo_cotizaciones",
+        "empresas",
+    ]
+    
+    has_any = False
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        # 1. Agregar archivos de la raíz
+        for fname in root_files:
+            p = _db_root / fname
+            if p.is_file():
+                zf.write(p, arcname=fname)
+                has_any = True
+                
+        # 2. Agregar directorios recursivamente
+        for sdir in subdirs:
+            dir_path = _db_root / sdir
+            if dir_path.is_dir():
+                for item in dir_path.rglob("*"):
+                    if item.is_file():
+                        # Evitar agregar logs o archivos temporales gigantes si los hay
+                        if item.suffix.lower() in [".xlsx", ".json", ".txt"]:
+                            rel_path = item.relative_to(_db_root)
+                            zf.write(item, arcname=str(rel_path))
+                            has_any = True
+    return has_any
+
+
+async def enviar_respaldo_email_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _allowed(update):
+        await _deny(update)
+        return
+    msg = update.effective_message
+    if not msg:
+        return
+        
+    if not config.SMTP_SERVER or not config.SMTP_USER or not config.SMTP_PASSWORD:
+        await msg.reply_text(
+            "⚠️ No se puede enviar el respaldo por correo porque no están configuradas "
+            "las variables SMTP en el archivo `.env` del servidor.\n\n"
+            "Por favor, configure `SMTP_SERVER`, `SMTP_USER` y `SMTP_PASSWORD`."
+        )
+        return
+
+    # Notificar que se está procesando
+    status_msg = await msg.reply_text("📦 Generando archivo comprimido de respaldo...")
+    
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmpdir:
+        zip_path = Path(tmpdir) / f"respaldo_vbot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+        try:
+            has_files = _create_backup_zip(zip_path)
+            if not has_files:
+                await status_msg.edit_text("⚠️ No se encontraron archivos de base de datos o Excel locales para respaldar.")
+                return
+                
+            await status_msg.edit_text("📧 Enviando respaldo por correo a tu Gmail...")
+            
+            from .email_sender import send_report_email
+            subject = f"Respaldo de Base de Datos vBot - {datetime.now().strftime('%d/%m/%Y %H:%M')}"
+            body = (
+                "Hola,\n\n"
+                "Adjunto encontrarás el archivo comprimido ZIP con todo el respaldo actual "
+                "de las bases de datos (usuarios, correlativos, Excels de compras, ventas y empresas) "
+                "de tu bot financiero.\n\n"
+                "Este correo fue solicitado desde Telegram.\n\n"
+                "Atentamente,\n"
+                "vBot"
+            )
+            
+            send_report_email(
+                recipient_email=config.SMTP_USER,
+                subject=subject,
+                body_text=body,
+                attachments=[zip_path]
+            )
+            
+            await status_msg.edit_text(
+                f"✅ ¡Respaldo enviado con éxito a *{config.SMTP_USER}*!\n\n"
+                "Puedes revisar tu bandeja de entrada y guardar el archivo adjunto "
+                "directamente en tu Google Drive desde Gmail.",
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.error(f"Error al enviar el respaldo por correo: {e}")
+            await status_msg.edit_text(f"❌ Error al enviar el respaldo por correo:\n`{e}`", parse_mode="Markdown")
+
+
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if not msg or not msg.document:
@@ -9715,6 +9823,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("cotizacion", cotizacion_cmd))
     app.add_handler(CommandHandler("nota", nota_cmd))
     app.add_handler(CommandHandler("descargar_excel", descargar_excel_cmd))
+    app.add_handler(CommandHandler("respaldo_email", enviar_respaldo_email_cmd))
     app.add_handler(CallbackQueryHandler(handle_admin_callback, pattern=r"^admin_"))
     app.add_handler(CallbackQueryHandler(handle_emit_retention_callback, pattern=r"^emit_"))
     app.add_handler(CallbackQueryHandler(handle_tributos_callback, pattern=r"^(tributos_|delete_ret_)"))
