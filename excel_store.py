@@ -720,12 +720,16 @@ def load_facturas_by_document_numbers(
 ) -> list[FacturaCompraRow]:
     if not path.exists():
         return []
-    def _norm_doc(v: str) -> str:
-        return re.sub(r"\s+", "", str(v or "")).strip().upper()
 
-    wanted = {_norm_doc(x) for x in doc_numbers if _norm_doc(x)}
-    if not wanted:
+    def _clean_match(v: str) -> str:
+        s = re.sub(r"[\s\-]+", "", str(v or "")).strip().upper()
+        s = re.sub(r"^(FACTURA|FAC|FA|F)", "", s)
+        return s
+
+    wanted_clean = {_clean_match(x) for x in doc_numbers if _clean_match(x)}
+    if not wanted_clean:
         return []
+
     wb = load_workbook(path, read_only=True, data_only=True)
     ws = wb.active
     headers = _headers_index(ws)
@@ -733,16 +737,17 @@ def load_facturas_by_document_numbers(
     for row in ws.iter_rows(min_row=2, values_only=True):
         if not row:
             continue
-        nro = _norm_doc(_cell(row, headers, "Numero_documento", "") or "")
-        if not nro:
+        raw_nro = str(_cell(row, headers, "Numero_documento", "") or "").strip()
+        if not raw_nro:
             continue
-        fact_afec = _norm_doc(_cell(row, headers, "Factura_afectada", "") or "")
+        raw_fact_afec = str(_cell(row, headers, "Factura_afectada", "") or "").strip()
+
         all_items.append(
             FacturaCompraRow(
                 tipo_documento=str(_cell(row, headers, "Tipo_documento", "") or "").strip(),
                 fecha_emision=str(_cell(row, headers, "Fecha_emision", "") or "").strip(),
                 fecha_vencimiento=str(_cell(row, headers, "Fecha_vencimiento", "") or "").strip(),
-                numero_documento=nro,
+                numero_documento=raw_nro,
                 numero_control=str(_cell(row, headers, "Numero_control", "") or "").strip(),
                 proveedor=str(_cell(row, headers, "Proveedor", "") or "").strip(),
                 proveedor_rif=str(_cell(row, headers, "Proveedor_RIF", "") or "").strip(),
@@ -757,21 +762,21 @@ def load_facturas_by_document_numbers(
                 base_imponible=_parse_monto_cell(_cell(row, headers, "Base_imponible", None)),
                 monto_iva=_parse_monto_cell(_cell(row, headers, "Monto_IVA", None)),
                 total=_parse_monto_cell(_cell(row, headers, "Total", None)),
-                factura_afectada=fact_afec,
+                factura_afectada=raw_fact_afec,
             )
         )
     wb.close()
 
-    base_docs = [it for it in all_items if it.numero_documento in wanted]
-    base_numbers = {it.numero_documento for it in base_docs}
+    base_docs = [it for it in all_items if _clean_match(it.numero_documento) in wanted_clean]
+    base_numbers_clean = {_clean_match(it.numero_documento) for it in base_docs}
 
     related_notes: list[FacturaCompraRow] = []
     for it in all_items:
-        if it.numero_documento in base_numbers:
+        if _clean_match(it.numero_documento) in base_numbers_clean:
             continue
         tipo_l = it.tipo_documento.lower()
         is_note = "credito" in tipo_l or "crédito" in tipo_l or "debito" in tipo_l or "débito" in tipo_l
-        if is_note and it.factura_afectada in base_numbers:
+        if is_note and _clean_match(it.factura_afectada) in base_numbers_clean:
             related_notes.append(it)
 
     return base_docs + related_notes
