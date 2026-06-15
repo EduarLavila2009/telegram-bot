@@ -5933,9 +5933,17 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if not _check_permission(update, "tributos"):
             await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
             return
+        ctx = _get_company_context(update)
         today = date.today()
         fortnight = 1 if today.day <= 15 else 2
-        report = tributario_engine.get_compromiso_tributario_report(today.year, today.month, fortnight)
+        report = tributario_engine.get_compromiso_tributario_report(
+            today.year, today.month, fortnight,
+            facturas_emitidas_path=ctx.facturas_emitidas_path,
+            reportes_z_path=ctx.reportes_z_path,
+            retenciones_emitidas_dir=ctx.retenciones_emitidas_dir,
+            excel_path=ctx.excel_path,
+            retenciones_islr_dir=ctx.retenciones_islr_dir
+        )
         text_report = format_tributos_report(report)
         kb = _tributos_keyboard(today.year, today.month, fortnight, _generate_short_summary(report))
         await msg.reply_text(text_report, reply_markup=kb, parse_mode="Markdown")

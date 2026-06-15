@@ -1048,7 +1048,10 @@ def append_retencion_emitida(
 def _norm_comp(v: str | int | float | None) -> str:
     if v is None:
         return ""
-    return re.sub(r"[^A-Za-z0-9]", "", str(v)).strip().upper()
+    s = str(v).strip()
+    if re.fullmatch(r"\d+\.0+", s):
+        s = s.split(".", 1)[0]
+    return re.sub(r"[^A-Za-z0-9]", "", s).strip().upper()
 
 
 def check_retencion_emitida_exists(base_dir: Path, numero_comprobante: str) -> tuple[Path, int, dict] | None:
