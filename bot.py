@@ -9662,26 +9662,46 @@ async def _generate_pending_withholdings_report(
         return
         
     try:
-        def _norm_doc(v: str) -> str:
-            return re.sub(r"\s+", "", str(v or "")).strip().upper()
+        def _clean_match(v: str) -> str:
+            s = str(v or "").strip().upper()
+            if s.endswith(".0"):
+                s = s[:-2]
+            s = re.sub(r"[\s\-\/]+", "", s)
+            s = re.sub(r"^(NOTADECREDITONRO|NOTADEDEBITONRO|NOTADECREDITO|NOTADEDEBITO|FACTURADECOMPRA|FACTURADEVENTA|FACTURA|FAC|FA|F|NC|ND|NCR|NDB|NE|NTE|NRO|NUM|N|NO)", "", s)
+            s = re.sub(r"^[A-Z]", "", s)
+            return s.lstrip("0")
+
             
         emitted_docs = set()
         base_dir = ctx.retenciones_emitidas_dir
+        
+        # Primero asegurar migración de cabeceras en los libros mensuales existentes
+        if base_dir.is_dir():
+            for filepath in base_dir.glob("RETEN-EMIT-*.xlsx"):
+                try:
+                    excel_store.ensure_retencion_emitida_workbook(filepath)
+                except Exception as e:
+                    logger.error(f"Error asegurando/migrando cabeceras en {filepath}: {e}")
+        
         if base_dir.is_dir():
             for filepath in base_dir.glob("RETEN-EMIT-*.xlsx"):
                 try:
                     temp_wb = load_workbook(filepath, read_only=True, data_only=True)
                     temp_ws = temp_wb.active
                     temp_headers = excel_store._headers_index(temp_ws)
+                    # Si no contiene la columna de Documentos después de migrar, saltamos
+                    if "Documentos" not in temp_headers:
+                        temp_wb.close()
+                        continue
                     for r in temp_ws.iter_rows(min_row=2, values_only=True):
                         if not r:
                             continue
                         doc_cell = str(excel_store._cell(r, temp_headers, "Documentos", "") or "").strip()
                         if doc_cell:
                             for d in re.split(r'[|,\s]+', doc_cell):
-                                d_norm = _norm_doc(d)
-                                if d_norm:
-                                    emitted_docs.add(d_norm)
+                                d_clean = _clean_match(d)
+                                if d_clean:
+                                    emitted_docs.add(d_clean)
                     temp_wb.close()
                 except Exception as e:
                     logger.error(f"Error cargando comprobantes de {filepath}: {e}")
@@ -9702,9 +9722,9 @@ async def _generate_pending_withholdings_report(
             
             tipo_doc = str(excel_store._cell(row, headers, "Tipo_documento", "Factura")).strip()
             num_doc = str(excel_store._cell(row, headers, "Numero_documento", "") or "").strip()
-            num_doc_norm = _norm_doc(num_doc)
+            num_doc_clean = _clean_match(num_doc)
             
-            if not num_doc_norm or num_doc_norm in emitted_docs:
+            if not num_doc_clean or num_doc_clean in emitted_docs:
                 continue
                 
             f_cell = excel_store._cell(row, headers, "Fecha_emision", None)

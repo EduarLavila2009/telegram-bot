@@ -722,9 +722,14 @@ def load_facturas_by_document_numbers(
         return []
 
     def _clean_match(v: str) -> str:
-        s = re.sub(r"[\s\-]+", "", str(v or "")).strip().upper()
-        s = re.sub(r"^(FACTURA|FAC|FA|F)", "", s)
-        return s
+        s = str(v or "").strip().upper()
+        if s.endswith(".0"):
+            s = s[:-2]
+        s = re.sub(r"[\s\-\/]+", "", s)
+        s = re.sub(r"^(NOTADECREDITONRO|NOTADEDEBITONRO|NOTADECREDITO|NOTADEDEBITO|FACTURADECOMPRA|FACTURADEVENTA|FACTURA|FAC|FA|F|NC|ND|NCR|NDB|NE|NTE|NRO|NUM|N|NO)", "", s)
+        s = re.sub(r"^[A-Z]", "", s)
+        return s.lstrip("0")
+
 
     wanted_clean = {_clean_match(x) for x in doc_numbers if _clean_match(x)}
     if not wanted_clean:
@@ -984,9 +989,51 @@ def append_reporte_z_nuevo(
     return True
 
 
+def migrate_retencion_emitida_headers(path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        wb = load_workbook(path)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            wb.close()
+            return
+        
+        header = rows[0]
+        # Si ya tiene el nuevo número de columnas y contiene "Documentos", no es necesario migrar
+        if len(header) >= 14 and "Documentos" in header:
+            wb.close()
+            return
+            
+        logger.info(f"Migrando cabeceras e índice de columnas en retenciones emitidas: {path}")
+        # Reconstruir la hoja
+        ws.delete_rows(1, ws.max_row)
+        ws.append(RETENCION_EMITIDA_HEADERS)
+        
+        for r in rows[1:]:
+            if not r:
+                continue
+            row_list = list(r)
+            if len(row_list) == 12:
+                # Es un registro viejo. Insertamos vacíos para "Documentos" y "Controles" (índices 6 y 7)
+                row_list.insert(6, "")
+                row_list.insert(7, "")
+            elif len(row_list) < 14:
+                # Rellenar con vacíos hasta 14
+                while len(row_list) < 14:
+                    row_list.append("")
+            ws.append(row_list)
+        wb.save(path)
+        wb.close()
+    except Exception as e:
+        logger.error(f"Error al migrar retenciones emitidas {path}: {e}")
+
+
 def ensure_retencion_emitida_workbook(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
+        migrate_retencion_emitida_headers(path)
         return
     wb = Workbook()
     ws = wb.active
