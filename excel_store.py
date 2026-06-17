@@ -787,6 +787,46 @@ def load_facturas_by_document_numbers(
     return base_docs + related_notes
 
 
+def delete_facturas_recibidas_by_numbers(path: Path, doc_numbers: list[str]) -> None:
+    if not path.exists():
+        return
+
+    def _clean(v: str) -> str:
+        s = str(v or "").strip().upper()
+        if s.endswith(".0"):
+            s = s[:-2]
+        s = re.sub(r"[\s\-\/]+", "", s)
+        s = re.sub(r"^(NOTADECREDITONRO|NOTADEDEBITONRO|NOTADECREDITO|NOTADEDEBITO|FACTURADECOMPRA|FACTURADEVENTA|FACTURA|FAC|FA|F|NC|ND|NCR|NDB|NE|NTE|NRO|NUM|N|NO)", "", s)
+        s = re.sub(r"^[A-Z]", "", s)
+        return s.lstrip("0")
+
+    wanted_clean = {_clean(x) for x in doc_numbers if _clean(x)}
+    if not wanted_clean:
+        return
+
+    wb = load_workbook(path)
+    ws = wb.active
+    headers = _headers_index(ws)
+    
+    num_doc_col = headers.get("Numero_documento")
+    if num_doc_col is None:
+        wb.close()
+        return
+
+    rows_to_delete = []
+    for r_idx in range(2, ws.max_row + 1):
+        cell_val = ws.cell(row=r_idx, column=num_doc_col + 1).value
+        cell_val_str = str(cell_val or "").strip()
+        if cell_val_str and _clean(cell_val_str) in wanted_clean:
+            rows_to_delete.append(r_idx)
+
+    for r_idx in reversed(rows_to_delete):
+        ws.delete_rows(r_idx)
+
+    wb.save(path)
+    wb.close()
+
+
 def monthly_retencion_emitida_path(base_dir: Path, emission_date: date) -> Path:
     return base_dir / f"RETEN-EMIT-{emission_date.strftime('%Y-%m')}.xlsx"
 

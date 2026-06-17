@@ -3633,6 +3633,14 @@ async def _emitir_retencion_generate(
             temp_pdf_path=out_path
         )
         
+        # Eliminar las facturas y notas de crédito ya usadas en el comprobante del archivo FACTURAS-RECIBIDAS-NUEVO.xlsx
+        deleted_docs = [it.numero_documento for it in items]
+        try:
+            excel_store.delete_facturas_recibidas_by_numbers(ctx.facturas_recibidas_path, deleted_docs)
+            logger.info("Eliminadas del Excel de compras recibidas las facturas/notas: %s", deleted_docs)
+        except Exception as ex_del:
+            logger.error("Error al eliminar las facturas usadas del Excel: %s", ex_del)
+        
         await msg.reply_document(
             document=str(out_path),
             filename=f"COMPROBANTE-RET-{num_comp}{suffix}",
