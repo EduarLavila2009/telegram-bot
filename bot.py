@@ -5726,6 +5726,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             retenciones_islr_dir=ctx.retenciones_islr_dir
         )
         report_text = format_tributos_report(report)
+        report_text = _append_diagnostics(report_text, ctx)
         kb = _tributos_keyboard(y, m, f, _generate_short_summary(report))
         
         month_names = {
@@ -8630,6 +8631,42 @@ async def handle_cotizaciones_callback(
     context.user_data.pop("pending_doc", None)
 
 
+def _append_diagnostics(text: str, ctx: CompanyContext) -> str:
+    debug_info = "\n\n🔍 *Diagnóstico de Archivos en Servidor:*\n"
+    try:
+        import os
+        from datetime import datetime
+        db_root = ctx.dir_path
+        debug_info += f"• DB Root: `{db_root.name}`\n"
+        
+        # Listar archivos en DB Root
+        files = []
+        for p in db_root.glob("*.xlsx"):
+            files.append(f"  - `{p.name}` ({p.stat().st_size} bytes)")
+        for p in db_root.glob("*.json"):
+            files.append(f"  - `{p.name}` ({p.stat().st_size} bytes)")
+        if files:
+            debug_info += "• Archivos en Raíz:\n" + "\n".join(files) + "\n"
+        else:
+            debug_info += "• No hay excels/json en Raíz.\n"
+            
+        # Listar archivos en RETENCIONES-EMITIDAS-NUEVO
+        emit_dir = ctx.retenciones_emitidas_dir
+        debug_info += f"• Directorio Emitidas: `{emit_dir.name}` (Existe: {emit_dir.exists()})\n"
+        if emit_dir.is_dir():
+            emit_files = []
+            for p in emit_dir.glob("*"):
+                mod_time = datetime.fromtimestamp(p.stat().st_mtime).strftime('%d/%m %H:%M')
+                emit_files.append(f"  - `{p.name}` ({p.stat().st_size} bytes, mod: {mod_time})")
+            if emit_files:
+                debug_info += "• Archivos Emitidas:\n" + "\n".join(emit_files) + "\n"
+            else:
+                debug_info += "• Vacío.\n"
+    except Exception as ex:
+        debug_info += f"Error en diagnóstico: {ex}\n"
+    return text + debug_info
+
+
 async def tributos_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _allowed(update):
         await _deny(update)
@@ -8651,6 +8688,7 @@ async def tributos_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         retenciones_islr_dir=ctx.retenciones_islr_dir
     )
     text = format_tributos_report(report)
+    text = _append_diagnostics(text, ctx)
     kb = _tributos_keyboard(today.year, today.month, fortnight, _generate_short_summary(report))
     
     msg = update.effective_message
@@ -8756,6 +8794,7 @@ async def handle_tributos_callback(
             retenciones_islr_dir=ctx.retenciones_islr_dir
         )
         text = format_tributos_report(report)
+        text = _append_diagnostics(text, ctx)
         kb = _tributos_keyboard(y, m, f, _generate_short_summary(report))
         await msg.edit_text(text, reply_markup=kb, parse_mode="Markdown")
         
