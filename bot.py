@@ -5579,7 +5579,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         context.user_data.get("admin_state") is not None or
         context.user_data.get("share_doc") is not None or
         context.user_data.get("awaiting_reprint_num") is not None or
-        context.user_data.get("awaiting_delete_ret_num") is not None
+        context.user_data.get("awaiting_delete_ret_num") is not None or
+        context.user_data.get("awaiting_tributos_excedente") is not None
     )
 
     # Procesar siempre publicaciones de canal y además chat SUFEVICA detectado, si no hay un flujo activo.
@@ -5669,6 +5670,78 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 f"❌ No encontré ningún comprobante de retención de *{label}* con número `{user_input}` en los registros.",
                 parse_mode="Markdown"
             )
+        return
+
+    # Interceptar entradas de texto del usuario para excedente de tributos
+    if context.user_data.get("awaiting_tributos_excedente"):
+        period_info = context.user_data.pop("awaiting_tributos_excedente")
+        y, m, f = period_info
+        
+        user_input = text.strip().replace(",", ".")
+        try:
+            monto = Decimal(user_input)
+            if monto < 0:
+                raise ValueError("El monto no puede ser negativo")
+        except Exception:
+            context.user_data["awaiting_tributos_excedente"] = period_info
+            await msg.reply_text(
+                "❌ *Monto Inválido*\n\n"
+                "Por favor, ingresa un número decimal positivo válido (ej: `1500.50` o `0`):",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("❌ Cancelar", callback_data=f"tributos_period_{y}_{m}_{f}")
+                ]])
+            )
+            return
+            
+        import json
+        config_path = ctx.dir_path / "tributos_config.json"
+        config_data = {}
+        if config_path.exists():
+            try:
+                with open(config_path, "r", encoding="utf-8") as file:
+                    config_data = json.load(file)
+            except Exception as e:
+                logger.error(f"Error cargando tributos_config.json: {e}")
+                
+        excedentes_manuales = config_data.setdefault("excedente_manual", {})
+        period_key = f"{y}-{m:02d}-{f}"
+        excedentes_manuales[period_key] = float(monto)
+        
+        try:
+            with open(config_path, "w", encoding="utf-8") as file:
+                json.dump(config_data, file, ensure_ascii=False, indent=4)
+        except Exception as e:
+            logger.error(f"Error guardando tributos_config.json: {e}")
+            await msg.reply_text(f"❌ Error interno al guardar la configuración: {e}")
+            return
+            
+        report = tributario_engine.get_compromiso_tributario_report(
+            y, m, f,
+            company_dir=ctx.dir_path,
+            facturas_emitidas_path=ctx.facturas_emitidas_path,
+            reportes_z_path=ctx.reportes_z_path,
+            retenciones_emitidas_dir=ctx.retenciones_emitidas_dir,
+            excel_path=ctx.excel_path,
+            retenciones_islr_dir=ctx.retenciones_islr_dir
+        )
+        report_text = format_tributos_report(report)
+        kb = _tributos_keyboard(y, m, f, _generate_short_summary(report))
+        
+        month_names = {
+            1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+            7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
+        }
+        m_name = month_names.get(m, str(m))
+        
+        await msg.reply_text(
+            f"✅ *Crédito fiscal anterior actualizado con éxito*\n"
+            f"Se ha registrado un excedente manual de `{excel_store._format_monto_ves(monto)}` Bs para la *{f}ra Quincena de {m_name} {y}*.\n\n"
+            f"A continuación se muestra el reporte actualizado:\n\n"
+            f"{report_text}",
+            reply_markup=kb,
+            parse_mode="Markdown"
+        )
         return
 
     # Interceptar entradas de texto del usuario para configuración de empresa (FlashTax)
@@ -7124,7 +7197,10 @@ def format_tributos_report(report: dict[str, object]) -> str:
     ret_islr_cnt = report.get("retenciones_islr_compras_count", 0)
     
     iva_neto = report["iva_neto_pagar"]
+    excedente_ant = report.get("excedente_periodo_anterior", Decimal("0"))
+    iva_resultado = report.get("iva_resultado", iva_neto - excedente_ant)
     pago_iva = report["iva_neto_pagar_efectivo"]
+    excedente_acumulado = report.get("excedente_acumulado_carro", Decimal("0"))
     anticipo = report["anticipo_islr"]
     total = report["total_compromisos_a_pagar"]
     
@@ -7140,12 +7216,17 @@ def format_tributos_report(report: dict[str, object]) -> str:
         f" 🔸 *Ventas (Débito Fiscal):* {excel_store._format_monto_ves(v_iva)} Bs ({v_cnt} doc)\n"
         f" 🔸 *Compras (Crédito Fiscal):* {excel_store._format_monto_ves(c_iva)} Bs ({c_cnt} doc)\n"
         f" 🔸 *Retenciones Recibidas:* {excel_store._format_monto_ves(ret_rec)} Bs ({ret_rec_cnt} doc)\n"
+        f" 🔸 *IVA del Período:* {excel_store._format_monto_ves(iva_neto)} Bs\n"
+        f" 🔸 *Crédito Período Ant.:* {excel_store._format_monto_ves(excedente_ant)} Bs\n"
     )
     
-    if iva_neto >= 0:
-        text += f" 👉 *IVA Neto a Pagar:* `{excel_store._format_monto_ves(iva_neto)}` Bs\n\n"
+    if iva_resultado >= 0:
+        text += f" 👉 *IVA Neto a Pagar:* `{excel_store._format_monto_ves(iva_resultado)}` Bs\n\n"
     else:
-        text += f" 👉 *Excedente a Favor:* `{excel_store._format_monto_ves(abs(iva_neto))}` Bs (Crédito Fiscal)\n\n"
+        text += (
+            f" 👉 *IVA Neto a Pagar:* `0,00` Bs\n"
+            f" 👉 *Excedente para Siguiente Período:* `{excel_store._format_monto_ves(excedente_acumulado)}` Bs\n\n"
+        )
         
     text += (
         f"📤 *Retenciones de IVA a Enterar (Proveedores)*:\n"
@@ -7213,6 +7294,9 @@ def _tributos_keyboard(year: int, month: int, fortnight: int, report_text: str =
         ],
         [
             InlineKeyboardButton("📤 Enviar Reportes por Correo (SMTP)", callback_data=f"tributos_sendemail_{year}_{month}_{fortnight}")
+        ],
+        [
+            InlineKeyboardButton("✏️ Ajustar Crédito Anterior", callback_data=f"tributos_setexcedente_{year}_{month}_{fortnight}")
         ],
         [
             InlineKeyboardButton("◀️ Quincena Ant.", callback_data=f"tributos_period_{prev_y}_{prev_m}_{prev_f}"),
@@ -8556,7 +8640,16 @@ async def tributos_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     today = date.today()
     fortnight = 1 if today.day <= 15 else 2
-    report = tributario_engine.get_compromiso_tributario_report(today.year, today.month, fortnight)
+    ctx = _get_company_context(update)
+    report = tributario_engine.get_compromiso_tributario_report(
+        today.year, today.month, fortnight,
+        company_dir=ctx.dir_path,
+        facturas_emitidas_path=ctx.facturas_emitidas_path,
+        reportes_z_path=ctx.reportes_z_path,
+        retenciones_emitidas_dir=ctx.retenciones_emitidas_dir,
+        excel_path=ctx.excel_path,
+        retenciones_islr_dir=ctx.retenciones_islr_dir
+    )
     text = format_tributos_report(report)
     kb = _tributos_keyboard(today.year, today.month, fortnight, _generate_short_summary(report))
     
@@ -8647,6 +8740,7 @@ async def handle_tributos_callback(
         return
 
     if data.startswith("tributos_period_"):
+        context.user_data.pop("awaiting_tributos_excedente", None)
         parts = data.split("_")
         y = int(parts[2])
         m = int(parts[3])
@@ -8654,6 +8748,7 @@ async def handle_tributos_callback(
         ctx = _get_company_context(update)
         report = tributario_engine.get_compromiso_tributario_report(
             y, m, f,
+            company_dir=ctx.dir_path,
             facturas_emitidas_path=ctx.facturas_emitidas_path,
             reportes_z_path=ctx.reportes_z_path,
             retenciones_emitidas_dir=ctx.retenciones_emitidas_dir,
@@ -8663,6 +8758,32 @@ async def handle_tributos_callback(
         text = format_tributos_report(report)
         kb = _tributos_keyboard(y, m, f, _generate_short_summary(report))
         await msg.edit_text(text, reply_markup=kb, parse_mode="Markdown")
+        
+    elif data.startswith("tributos_setexcedente_"):
+        parts = data.split("_")
+        y = int(parts[2])
+        m = int(parts[3])
+        f = int(parts[4])
+        
+        context.user_data["awaiting_tributos_excedente"] = (y, m, f)
+        
+        month_names = {
+            1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+            7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
+        }
+        m_name = month_names.get(m, str(m))
+        
+        await msg.edit_text(
+            f"✏️ *Ajustar Crédito Fiscal de Períodos Anteriores*\n\n"
+            f"Por favor, escribe y envía el monto de crédito fiscal (saldo a favor) de períodos anteriores "
+            f"para el período *{f}ra Quincena de {m_name} {y}* (ej: `1500.50` o `0`):\n\n"
+            f"⚠️ *Nota:* Esto sobreescribirá el arrastre automático para este período.",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("❌ Cancelar", callback_data=f"tributos_period_{y}_{m}_{f}")
+            ]])
+        )
+        return
         
     elif data.startswith("tributos_detiva_"):
         parts = data.split("_")

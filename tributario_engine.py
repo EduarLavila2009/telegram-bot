@@ -349,11 +349,96 @@ def get_seniat_due_date(year: int, month: int, fortnight: int) -> date:
         return date(decl_year, decl_month, day)
 
 
+def get_excedente_anterior(
+    year: int,
+    month: int,
+    fortnight: int,
+    *,
+    company_dir: Path | None = None,
+    facturas_emitidas_path: Path | None = None,
+    reportes_z_path: Path | None = None,
+    retenciones_emitidas_dir: Path | None = None,
+    excel_path: Path | None = None,
+) -> Decimal:
+    """
+    Obtiene el excedente de crédito fiscal del período anterior, encadenando los resultados
+    recursivamente desde la primera quincena de junio de 2026.
+    """
+    config_data = {}
+    if company_dir:
+        config_path = company_dir / "tributos_config.json"
+        if config_path.exists():
+            try:
+                import json
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config_data = json.load(f)
+            except Exception as e:
+                logger.error(f"Error cargando tributos_config.json: {e}")
+                
+    period_key = f"{year}-{month:02d}-{fortnight}"
+    excedentes_manuales = config_data.get("excedente_manual", {})
+    
+    # Si hay un valor manual para este periodo específico, se usa con prioridad absoluta
+    if period_key in excedentes_manuales:
+        try:
+            return Decimal(str(excedentes_manuales[period_key]))
+        except Exception:
+            pass
+            
+    # Punto de partida: 1ra quincena de junio 2026.
+    # Antes o en esa fecha, el excedente anterior es 0 a menos que se ingrese manualmente.
+    if year < 2026 or (year == 2026 and month < 6) or (year == 2026 and month == 6 and fortnight == 1):
+        return Decimal("0")
+        
+    # Obtener el período anterior en la secuencia quincenal
+    if fortnight == 2:
+        prev_y, prev_m, prev_f = year, month, 1
+    else:
+        if month == 1:
+            prev_y, prev_m, prev_f = year - 1, 12, 2
+        else:
+            prev_y, prev_m, prev_f = year, month - 1, 2
+            
+    # Calcular recursivamente el excedente del período anterior
+    prev_excedente_ant = get_excedente_anterior(
+        prev_y, prev_m, prev_f,
+        company_dir=company_dir,
+        facturas_emitidas_path=facturas_emitidas_path,
+        reportes_z_path=reportes_z_path,
+        retenciones_emitidas_dir=retenciones_emitidas_dir,
+        excel_path=excel_path
+    )
+    
+    # Calcular los totales del período anterior para deducir el remanente
+    start_date, end_date = get_fortnight_range(prev_y, prev_m, prev_f)
+    
+    v_base, v_iva, _ = get_sales_totals(
+        start_date, end_date,
+        facturas_emitidas_path=facturas_emitidas_path,
+        reportes_z_path=reportes_z_path
+    )
+    c_base, c_iva, _ = get_purchases_totals(
+        start_date, end_date,
+        retenciones_emitidas_dir=retenciones_emitidas_dir
+    )
+    ret_rec, _ = get_withholdings_received_totals(
+        start_date, end_date,
+        excel_path=excel_path
+    )
+    
+    iva_neto_prev = v_iva - c_iva - ret_rec
+    
+    # ECF_sig = max(0, ECF_ant - IVA_neto)
+    remanente = prev_excedente_ant - iva_neto_prev
+    return max(Decimal("0"), remanente)
+
+
 def get_compromiso_tributario_report(
     year: int,
     month: int,
     fortnight: int,
     *,
+    company_dir: Path | None = None,
     facturas_emitidas_path: Path | None = None,
     reportes_z_path: Path | None = None,
     retenciones_emitidas_dir: Path | None = None,
@@ -362,7 +447,7 @@ def get_compromiso_tributario_report(
 ) -> dict[str, object]:
     """
     Genera un informe completo estructurado de todos los compromisos tributarios
-    de la quincena indicada.
+    de la quincena indicada, incluyendo el excedente de crédito fiscal anterior.
     """
     start_date, end_date = get_fortnight_range(year, month, fortnight)
     
@@ -403,16 +488,29 @@ def get_compromiso_tributario_report(
     )
     
     # 5. Cálculos netos de IVA por pagar
-    # IVA a pagar = IVA Débito (Ventas) - IVA Crédito (Compras) - Retenciones Recibidas (Clientes)
+    # IVA Neto del periodo actual = IVA Débito (Ventas) - IVA Crédito (Compras) - Retenciones Recibidas (Clientes)
     iva_neto = v_iva - c_iva - ret_rec
+    
+    # Obtener el saldo a favor en créditos fiscales de períodos anteriores
+    excedente_anterior = get_excedente_anterior(
+        year, month, fortnight,
+        company_dir=company_dir,
+        facturas_emitidas_path=facturas_emitidas_path,
+        reportes_z_path=reportes_z_path,
+        retenciones_emitidas_dir=retenciones_emitidas_dir,
+        excel_path=excel_path
+    )
+    
+    # Aplicar el crédito fiscal excedente anterior al IVA Neto
+    iva_resultado = iva_neto - excedente_anterior
+    pago_iva = max(Decimal("0"), iva_resultado)
+    excedente_acumulado = max(Decimal("0"), -iva_resultado)
     
     # 6. Anticipo de ISLR
     anticipo_islr = v_base * ALICUOTA_ANTICIPO_ISLR
     
     # 7. Total general de compromisos de la quincena
-    # IVA Neto + Retenciones Emitidas a Enterar + Anticipo de ISLR + Retenciones ISLR
-    # Nota: Si el IVA Neto es negativo (excedente), para el pago al fisco se toma como 0.00
-    pago_iva = max(Decimal("0"), iva_neto)
+    # IVA Neto a pagar en efectivo + Retenciones Emitidas a Enterar + Anticipo de ISLR + Retenciones ISLR
     total_pagos = pago_iva + ret_emi + anticipo_islr + ret_islr_compras
     
     # 8. Fecha límite del SENIAT
@@ -438,7 +536,10 @@ def get_compromiso_tributario_report(
         "retenciones_islr_compras": ret_islr_compras,
         "retenciones_islr_compras_count": ret_islr_compras_count,
         "iva_neto_pagar": iva_neto,
+        "excedente_periodo_anterior": excedente_anterior,
+        "iva_resultado": iva_resultado,
         "iva_neto_pagar_efectivo": pago_iva,
+        "excedente_acumulado_carro": excedente_acumulado,
         "anticipo_islr": anticipo_islr,
         "anticipo_islr_alicuota": ALICUOTA_ANTICIPO_ISLR,
         "total_compromisos_a_pagar": total_pagos,
