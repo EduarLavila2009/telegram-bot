@@ -119,7 +119,7 @@ class CompanyContext:
 
 def _get_company_context(update: Update | None) -> CompanyContext:
     uid = None
-    if update and update.effective_user:
+    if update and not _is_public_or_sufevica(update) and update.effective_user:
         uid = update.effective_user.id
     ctx = CompanyContext(uid)
     if ctx.is_custom:
@@ -187,6 +187,7 @@ SUBMENU_REPORTE_Z = "📊 Reportes Z"
 SUBMENU_FACTURA_EMITIDA = "📈 Facturas Emitidas"
 SUBMENU_GENERAR_RETENCION = "✍️ Generar Retención"
 SUBMENU_ELIMINAR_RETENCION = "❌ Eliminar Retención"
+SUBMENU_ELIMINAR_FACTURA = "❌ Eliminar Factura"
 SUBMENU_GENERAR_REPORTES = "📋 Generar Reportes"
 SUBMENU_VOLVER = "🔙 Volver al Menú Principal"
 
@@ -257,6 +258,7 @@ def _tributos_submenu_keyboard(user_id: int | str = "") -> ReplyKeyboardMarkup:
         kb_layout = [
             [KeyboardButton(SUBMENU_CARGAR_FACTURA), KeyboardButton(SUBMENU_RETENCION_RECIBIDA)],
             [KeyboardButton(SUBMENU_REPORTE_Z), KeyboardButton(SUBMENU_FACTURA_EMITIDA)],
+            [KeyboardButton(SUBMENU_ELIMINAR_FACTURA)],
             [KeyboardButton(SUBMENU_GENERAR_REPORTES)],
             [KeyboardButton(SUBMENU_VOLVER)],
         ]
@@ -265,6 +267,7 @@ def _tributos_submenu_keyboard(user_id: int | str = "") -> ReplyKeyboardMarkup:
             [KeyboardButton(SUBMENU_CARGAR_FACTURA), KeyboardButton(SUBMENU_RETENCION_RECIBIDA)],
             [KeyboardButton(SUBMENU_REPORTE_Z), KeyboardButton(SUBMENU_FACTURA_EMITIDA)],
             [KeyboardButton(SUBMENU_GENERAR_RETENCION), KeyboardButton(SUBMENU_ELIMINAR_RETENCION)],
+            [KeyboardButton(SUBMENU_ELIMINAR_FACTURA)],
             [KeyboardButton(SUBMENU_GENERAR_REPORTES)],
             [KeyboardButton(SUBMENU_VOLVER)],
         ]
@@ -474,9 +477,11 @@ def _can_modify_tributos(update: Update) -> bool:
     return False
 
 
-def _get_next_retencion_emitida_number_for_user(user_id: int | str, monthly_path: Path, emission_date: date) -> str:
-    user = user_manager.get_user(user_id)
-    config_correlative = user.get("last_correlative") if user else None
+def _get_next_retencion_emitida_number_for_user(user_id: int | str, monthly_path: Path, emission_date: date, is_custom: bool = False) -> str:
+    config_correlative = None
+    if is_custom:
+        user = user_manager.get_user(user_id)
+        config_correlative = user.get("last_correlative") if user else None
     prefix = emission_date.strftime("%Y%m")
     
     max_seq_excel = excel_store.max_seq_retencion_emitida(monthly_path.parent, emission_date=emission_date)
@@ -940,10 +945,12 @@ async def _start_emitir_retencion_flow(
     base_total, iva_total, retenido = _totals_for_items(items)
     emission_date = date.today()
     monthly_path = _reten_emit_monthly_path(emission_date, update.effective_user.id)
+    ctx = _get_company_context(update)
     next_num = _get_next_retencion_emitida_number_for_user(
         update.effective_user.id,
         monthly_path,
         emission_date=emission_date,
+        is_custom=ctx.is_custom,
     )
     context.user_data["pending_emit_ret"] = {
         "docs": doc_numbers,
@@ -1804,7 +1811,8 @@ SYNC_FILES = {
     "facturas_emitidas": "FACTURAS-EMITIDAS.xlsx",
     "reportes_z": "REPORTES-Z-NUEVO.xlsx",
     "productos": config.PRODUCTOS_PATH.name,
-    "usuarios": "usuarios.json"
+    "usuarios": "usuarios.json",
+    "correlativos": "modulo_cotizaciones/correlativos.json"
 }
 
 def get_sync_file_path(key: str, user_id: int | str | None = None) -> Path | None:
@@ -1821,6 +1829,10 @@ def get_sync_file_path(key: str, user_id: int | str | None = None) -> Path | Non
         return ctx.productos_path
     elif key == "usuarios":
         return user_manager.DB_PATH
+    elif key == "correlativos":
+        if not ctx.is_custom:
+            return ctx.dir_path / "modulo_cotizaciones" / "correlativos.json"
+        return None
     return None
 
 _last_mtime_cache = {}
@@ -1994,9 +2006,13 @@ async def restore_files_from_backup(bot) -> None:
                     path = c_ctx.productos_path
                 elif sub_key.startswith("dynamic_emit_"):
                     filename = sub_key[len("dynamic_emit_"):]
+                    if filename.startswith("reten-emit-"):
+                        filename = "RETEN-EMIT-" + filename[len("reten-emit-"):]
                     path = c_ctx.retenciones_emitidas_dir / filename
                 elif sub_key.startswith("dynamic_islr_"):
                     filename = sub_key[len("dynamic_islr_"):]
+                    if filename.startswith("reten-islr-"):
+                        filename = "RETEN-ISLR-" + filename[len("reten-islr-"):]
                     path = c_ctx.retenciones_islr_dir / filename
                 else:
                     continue
@@ -2005,9 +2021,13 @@ async def restore_files_from_backup(bot) -> None:
                 continue
         elif key.startswith("dynamic_emit_"):
             filename = key[len("dynamic_emit_"):]
+            if filename.startswith("reten-emit-"):
+                filename = "RETEN-EMIT-" + filename[len("reten-emit-"):]
             path = ctx.retenciones_emitidas_dir / filename
         elif key.startswith("dynamic_islr_"):
             filename = key[len("dynamic_islr_"):]
+            if filename.startswith("reten-islr-"):
+                filename = "RETEN-ISLR-" + filename[len("reten-islr-"):]
             path = ctx.retenciones_islr_dir / filename
         else:
             path = get_sync_file_path(key)
@@ -2028,10 +2048,54 @@ async def restore_files_from_backup(bot) -> None:
         except Exception as e:
             logger.error(f"Error descargando respaldo de {filename} (clave: {key}): {e}")
 
+def _normalize_local_file_casing() -> None:
+    """Normaliza nombres de archivos en disco que pudieran estar en minúsculas en Linux."""
+    try:
+        import os
+        # 1. Normalizar SUFEVICA (por defecto)
+        ctx = CompanyContext(None)
+        _normalize_dir_casing(ctx.retenciones_emitidas_dir, "reten-emit-", "RETEN-EMIT-")
+        _normalize_dir_casing(ctx.retenciones_islr_dir, "reten-islr-", "RETEN-ISLR-")
+        
+        # 2. Normalizar empresas custom
+        users_data = user_manager.load_users().get("users", {})
+        for uid, u_info in users_data.items():
+            if u_info.get("role") == "nueva_empresa":
+                c_ctx = CompanyContext(uid)
+                _normalize_dir_casing(c_ctx.retenciones_emitidas_dir, "reten-emit-", "RETEN-EMIT-")
+                _normalize_dir_casing(c_ctx.retenciones_islr_dir, "reten-islr-", "RETEN-ISLR-")
+    except Exception as e:
+        logger.error(f"Error normalizando la capitalización de archivos locales: {e}")
+
+def _normalize_dir_casing(directory: Path, lowercase_prefix: str, uppercase_prefix: str) -> None:
+    import os
+    if not directory.is_dir():
+        return
+    for path in directory.iterdir():
+        if path.is_file() and path.name.startswith(lowercase_prefix):
+            new_name = uppercase_prefix + path.name[len(lowercase_prefix):]
+            new_path = directory / new_name
+            try:
+                # Usar un archivo temporal intermedio para evitar colisiones en sistemas case-insensitive (Windows)
+                temp_path = directory / (path.name + ".tmp_rename")
+                if temp_path.exists():
+                    os.remove(temp_path)
+                path.rename(temp_path)
+                
+                # Si el archivo destino en mayúsculas existe en disco y es físico diferente, lo borramos
+                if new_path.exists() and new_path.resolve() != temp_path.resolve():
+                    os.remove(new_path)
+                temp_path.rename(new_path)
+                logger.info(f"Renombrado archivo de retención a mayúsculas: {path.name} -> {new_name}")
+            except Exception as e:
+                logger.error(f"Error renombrando {path} a {new_path}: {e}")
+
 async def post_init(application: Application) -> None:
     # 1. Restaurar archivos desde el respaldo de Telegram al iniciar
     await restore_files_from_backup(application.bot)
-    # 2. Iniciar job periódico de monitoreo cada 15 segundos
+    # 2. Normalizar la capitalización de nombres de archivos locales
+    _normalize_local_file_casing()
+    # 3. Iniciar job periódico de monitoreo cada 15 segundos
     if application.job_queue:
         application.job_queue.run_repeating(check_and_sync_files, interval=15, first=10)
 
@@ -3533,10 +3597,12 @@ async def _emitir_retencion_generate(
             )
             return
     else:
+        ctx = _get_company_context(update)
         num_comp = _get_next_retencion_emitida_number_for_user(
             update.effective_user.id,
             monthly_path,
             emission_date=emission_date,
+            is_custom=ctx.is_custom,
         )
         logger.info(
             "Correlativo asignado desde Excel %s: %s",
@@ -3675,10 +3741,12 @@ async def handle_emit_retention_callback(
         if emission_date is None:
             emission_date = date.today()
         monthly_path = _reten_emit_monthly_path(emission_date, update.effective_user.id)
+        ctx = _get_company_context(update)
         next_num = _get_next_retencion_emitida_number_for_user(
             update.effective_user.id,
             monthly_path,
             emission_date=emission_date,
+            is_custom=ctx.is_custom,
         )
         kb = InlineKeyboardMarkup(
             [[
@@ -5580,6 +5648,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         context.user_data.get("share_doc") is not None or
         context.user_data.get("awaiting_reprint_num") is not None or
         context.user_data.get("awaiting_delete_ret_num") is not None or
+        context.user_data.get("awaiting_delete_invoice") is not None or
         context.user_data.get("awaiting_tributos_excedente") is not None
     )
 
@@ -5668,6 +5737,58 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         else:
             await msg.reply_text(
                 f"❌ No encontré ningún comprobante de retención de *{label}* con número `{user_input}` en los registros.",
+                parse_mode="Markdown"
+            )
+        return
+
+    # Interceptar entradas de texto del usuario para eliminación de factura
+    if context.user_data.get("awaiting_delete_invoice"):
+        context.user_data.pop("awaiting_delete_invoice", None)
+        user_input = text.strip()
+        
+        compra_info = excel_store.check_factura_exists(ctx.facturas_recibidas_path, user_input)
+        venta_info = excel_store.check_factura_exists(ctx.facturas_emitidas_path, user_input)
+        
+        if compra_info or venta_info:
+            kb_buttons = []
+            confirm_text = "⚠️ *ADVERTENCIA DE ELIMINACIÓN DE FACTURA* ⚠️\n\nSe encontraron las siguientes facturas coincidentes:\n\n"
+            
+            if compra_info:
+                path, row_idx, details = compra_info
+                confirm_text += (
+                    f"📥 *Factura Recibida (Compra):*\n"
+                    f"• Nro: `{details['Numero_documento']}`\n"
+                    f"• Proveedor: {details['Proveedor']} (RIF: `{details['RIF']}`)\n"
+                    f"• Fecha: {details['Fecha']}\n"
+                    f"• Total: {details['Total']}\n\n"
+                )
+                kb_buttons.append([InlineKeyboardButton("🔥 Eliminar Compra", callback_data=f"delete_inv_confirm:compra:{user_input}")])
+                
+            if venta_info:
+                path, row_idx, details = venta_info
+                confirm_text += (
+                    f"📈 *Factura Emitida (Venta):*\n"
+                    f"• Nro: `{details['Numero_documento']}`\n"
+                    f"• Razón Social: {details['Proveedor']} (RIF: `{details['RIF']}`)\n"
+                    f"• Fecha: {details['Fecha']}\n"
+                    f"• Total: {details['Total']}\n\n"
+                )
+                kb_buttons.append([InlineKeyboardButton("🔥 Eliminar Venta", callback_data=f"delete_inv_confirm:venta:{user_input}")])
+                
+            if compra_info and venta_info:
+                kb_buttons.append([InlineKeyboardButton("🔥 Eliminar Ambas", callback_data=f"delete_inv_confirm:ambas:{user_input}")])
+                
+            kb_buttons.append([InlineKeyboardButton("❌ Cancelar", callback_data="delete_inv_cancel")])
+            confirm_text += "¿Estás seguro de que deseas proceder con la eliminación? Esta acción es irreversible."
+            
+            await msg.reply_text(
+                confirm_text,
+                reply_markup=InlineKeyboardMarkup(kb_buttons),
+                parse_mode="Markdown"
+            )
+        else:
+            await msg.reply_text(
+                f"❌ No encontré ninguna factura registrada con el número `{user_input}` en las facturas recibidas ni en las emitidas.",
                 parse_mode="Markdown"
             )
         return
@@ -5849,13 +5970,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         SUBMENU_CARGAR_FACTURA, SUBMENU_RETENCION_RECIBIDA, SUBMENU_REPORTE_Z,
         SUBMENU_FACTURA_EMITIDA, SUBMENU_GENERAR_RETENCION, SUBMENU_GENERAR_REPORTES,
         REPORT_IVA_BUTTON, REPORT_RETENCIONES_BUTTON, REPORT_FACTURAS_BUTTON, REPORT_PENDIENTES_BUTTON,
-        SUBMENU_ELIMINAR_RETENCION
+        SUBMENU_ELIMINAR_RETENCION, SUBMENU_ELIMINAR_FACTURA
     }:
         context.user_data.pop("pending_doc", None)
         context.user_data.pop("awaiting_emit_docs", None)
         context.user_data.pop("admin_state", None)
         context.user_data.pop("admin_new_user", None)
         context.user_data.pop("share_doc", None)
+        context.user_data.pop("awaiting_delete_invoice", None)
     
     # Interceptar entradas de texto del administrador para registro de usuarios
     admin_state = context.user_data.get("admin_state")
@@ -6051,7 +6173,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    elif text in (SUBMENU_CARGAR_FACTURA, SUBMENU_RETENCION_RECIBIDA, SUBMENU_REPORTE_Z, SUBMENU_FACTURA_EMITIDA, SUBMENU_GENERAR_RETENCION, SUBMENU_ELIMINAR_RETENCION):
+    elif text in (SUBMENU_CARGAR_FACTURA, SUBMENU_RETENCION_RECIBIDA, SUBMENU_REPORTE_Z, SUBMENU_FACTURA_EMITIDA, SUBMENU_GENERAR_RETENCION, SUBMENU_ELIMINAR_RETENCION, SUBMENU_ELIMINAR_FACTURA):
         if not _check_permission(update, "tributos"):
             await msg.reply_text("❌ No tienes privilegios para acceder al módulo de Tributos.")
             return
@@ -6110,6 +6232,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 reply_markup=kb,
                 parse_mode="Markdown"
             )
+        elif text == SUBMENU_ELIMINAR_FACTURA:
+            await msg.reply_text(
+                "🗑️ *Eliminar Factura Registrada*\n\n"
+                "Por favor, escribe el número de la factura que deseas eliminar (ej: `00007553`):"
+            )
+            context.user_data["awaiting_delete_invoice"] = True
         return
 
     elif text == SUBMENU_GENERAR_REPORTES:
@@ -7741,14 +7869,14 @@ async def _send_document_email_async(
         context.user_data.pop("share_doc", None)
 
 
-def _get_and_increment_correlativo(doc_type: str, user_id: int | str | None = None) -> str:
+def _get_and_increment_correlativo(doc_type: str, user_id: int | str | None = None, is_custom: bool = False) -> str:
     _db_root = Path("/data") if Path("/data").is_dir() else Path(__file__).resolve().parent
     correlativos_path = _db_root / "modulo_cotizaciones" / "correlativos.json"
     key = "next_cotizacion" if doc_type == "cotizacion" else "next_nota"
     num = None
     
-    # 1. Intentar obtener el correlativo del perfil de usuario (usuarios.json)
-    if user_id is not None:
+    # 1. Intentar obtener el correlativo del perfil de usuario (usuarios.json) si es custom
+    if is_custom and user_id is not None:
         user = user_manager.get_user(user_id)
         if user:
             num = user.get(key)
@@ -7758,7 +7886,7 @@ def _get_and_increment_correlativo(doc_type: str, user_id: int | str | None = No
                 except (ValueError, TypeError):
                     num = None
                     
-    # 2. Si no está en el perfil, buscar en el archivo global correlativos.json
+    # 2. Si no es custom o no está en el perfil, buscar en el archivo global correlativos.json
     if num is None:
         global_data = {"cotizacion": 1, "nota": 1}
         if correlativos_path.exists():
@@ -7776,11 +7904,11 @@ def _get_and_increment_correlativo(doc_type: str, user_id: int | str | None = No
     # 3. Incrementar el correlativo actual
     next_num = num + 1
     
-    # 4. Guardar en el perfil de usuario (si existe)
-    if user_id is not None:
+    # 4. Guardar en el perfil de usuario (si es custom y existe)
+    if is_custom and user_id is not None:
         user_manager.update_user_field(user_id, key, next_num)
         
-    # 5. Guardar también en el archivo global correlativos.json para retrocompatibilidad
+    # 5. Guardar también en el archivo global correlativos.json para retrocompatibilidad/SUFEVICA
     try:
         import json
         global_data = {"cotizacion": 1, "nota": 1}
@@ -7790,6 +7918,7 @@ def _get_and_increment_correlativo(doc_type: str, user_id: int | str | None = No
             except Exception:
                 pass
         global_data[doc_type] = next_num
+        correlativos_path.parent.mkdir(parents=True, exist_ok=True)
         correlativos_path.write_text(json.dumps(global_data, indent=4), encoding="utf-8")
     except Exception:
         pass
@@ -8559,7 +8688,8 @@ async def handle_builder_callback(update: Update, context: ContextTypes.DEFAULT_
             
         doc_type = doc_data["docType"]
         user_id = update.effective_user.id if update.effective_user else None
-        correlativo = _get_and_increment_correlativo(doc_type, user_id)
+        ctx = _get_company_context(update)
+        correlativo = _get_and_increment_correlativo(doc_type, user_id, is_custom=ctx.is_custom)
         doc_data["docNumber"] = correlativo
         
         try:
@@ -8618,7 +8748,8 @@ async def handle_cotizaciones_callback(
     # Asignar correlativo automático secuencial
     doc_type = doc_data["docType"]
     user_id = update.effective_user.id if update.effective_user else None
-    correlativo = _get_and_increment_correlativo(doc_type, user_id)
+    ctx = _get_company_context(update)
+    correlativo = _get_and_increment_correlativo(doc_type, user_id, is_custom=ctx.is_custom)
     doc_data["docNumber"] = correlativo
     
     # Eliminar mensaje de espera
@@ -8775,6 +8906,47 @@ async def handle_tributos_callback(
                 )
             else:
                 await msg.edit_text(f"❌ El comprobante de ISLR {num_comp} ya no existe en los registros.")
+        return
+
+    elif data.startswith("delete_inv_confirm:"):
+        parts = data.split(":")
+        if len(parts) < 3:
+            return
+        inv_type = parts[1]
+        num_doc = parts[2]
+        
+        ctx = _get_company_context(update)
+        
+        if inv_type in ("compra", "ambas"):
+            compra_info = excel_store.check_factura_exists(ctx.facturas_recibidas_path, num_doc)
+            if compra_info:
+                path, row_idx, _ = compra_info
+                excel_store.delete_facturas_recibidas_by_numbers(path, [num_doc])
+                logger.info(f"User deleted purchase invoice {num_doc} from {path}")
+                
+        if inv_type in ("venta", "ambas"):
+            venta_info = excel_store.check_factura_exists(ctx.facturas_emitidas_path, num_doc)
+            if venta_info:
+                path, row_idx, _ = venta_info
+                excel_store.delete_facturas_recibidas_by_numbers(path, [num_doc])
+                logger.info(f"User deleted sales invoice {num_doc} from {path}")
+                
+        type_lbl = {
+            "compra": "Compra",
+            "venta": "Venta",
+            "ambas": "Compra y Venta"
+        }.get(inv_type, inv_type)
+        
+        await msg.edit_text(
+            f"✅ *Factura de {type_lbl} Nro {num_doc} eliminada con éxito.*",
+            parse_mode="Markdown"
+        )
+        return
+        
+    elif data == "delete_inv_cancel":
+        await msg.edit_text(
+            "❌ Operación cancelada. La factura no ha sido eliminada."
+        )
         return
 
     if data.startswith("tributos_period_"):
@@ -10016,7 +10188,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("respaldo_email", enviar_respaldo_email_cmd))
     app.add_handler(CallbackQueryHandler(handle_admin_callback, pattern=r"^admin_"))
     app.add_handler(CallbackQueryHandler(handle_emit_retention_callback, pattern=r"^emit_"))
-    app.add_handler(CallbackQueryHandler(handle_tributos_callback, pattern=r"^(tributos_|delete_ret_)"))
+    app.add_handler(CallbackQueryHandler(handle_tributos_callback, pattern=r"^(tributos_|delete_ret_|delete_inv_)"))
     app.add_handler(CallbackQueryHandler(handle_cotizaciones_edit_callback, pattern=r"^coti_edit_"))
     app.add_handler(CallbackQueryHandler(handle_cotizaciones_callback, pattern=r"^coti_curr_"))
     app.add_handler(CallbackQueryHandler(handle_builder_callback, pattern=r"^coti_build_"))

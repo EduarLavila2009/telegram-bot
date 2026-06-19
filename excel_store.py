@@ -827,6 +827,63 @@ def delete_facturas_recibidas_by_numbers(path: Path, doc_numbers: list[str]) -> 
     wb.close()
 
 
+def check_factura_exists(path: Path, doc_number: str) -> tuple[Path, int, dict] | None:
+    if not path.exists():
+        return None
+
+    def _clean(v: str) -> str:
+        s = str(v or "").strip().upper()
+        if s.endswith(".0"):
+            s = s[:-2]
+        s = re.sub(r"[\s\-\/]+", "", s)
+        s = re.sub(r"^(NOTADECREDITONRO|NOTADEDEBITONRO|NOTADECREDITO|NOTADEDEBITO|FACTURADECOMPRA|FACTURADEVENTA|FACTURA|FAC|FA|F|NC|ND|NCR|NDB|NE|NTE|NRO|NUM|N|NO)", "", s)
+        s = re.sub(r"^[A-Z]", "", s)
+        return s.lstrip("0")
+
+    wanted_clean = _clean(doc_number)
+    if not wanted_clean:
+        return None
+
+    wb = load_workbook(path, data_only=True)
+    ws = wb.active
+    headers = _headers_index(ws)
+    
+    num_doc_col = headers.get("Numero_documento")
+    if num_doc_col is None:
+        wb.close()
+        return None
+
+    fecha_col = headers.get("Fecha_emision") or headers.get("Fecha")
+    prov_col = headers.get("Proveedor") or headers.get("Razon_social")
+    total_col = headers.get("Total")
+    rif_col = headers.get("Proveedor_RIF") or headers.get("RIF")
+    tipo_col = headers.get("Tipo_documento") or headers.get("Clasificacion")
+
+    match_found = None
+    for r_idx in range(2, ws.max_row + 1):
+        cell_val = ws.cell(row=r_idx, column=num_doc_col + 1).value
+        cell_val_str = str(cell_val or "").strip()
+        if cell_val_str and _clean(cell_val_str) == wanted_clean:
+            fecha_val = ws.cell(row=r_idx, column=fecha_col + 1).value if fecha_col is not None else ""
+            prov_val = ws.cell(row=r_idx, column=prov_col + 1).value if prov_col is not None else ""
+            total_val = ws.cell(row=r_idx, column=total_col + 1).value if total_col is not None else ""
+            rif_val = ws.cell(row=r_idx, column=rif_col + 1).value if rif_col is not None else ""
+            tipo_val = ws.cell(row=r_idx, column=tipo_col + 1).value if tipo_col is not None else ""
+
+            match_found = (path, r_idx, {
+                "Numero_documento": cell_val_str,
+                "Fecha": str(fecha_val or "").strip(),
+                "Proveedor": str(prov_val or "").strip(),
+                "RIF": str(rif_val or "").strip(),
+                "Total": str(total_val or "").strip(),
+                "Tipo": str(tipo_val or "").strip()
+            })
+            break
+
+    wb.close()
+    return match_found
+
+
 def monthly_retencion_emitida_path(base_dir: Path, emission_date: date) -> Path:
     return base_dir / f"RETEN-EMIT-{emission_date.strftime('%Y-%m')}.xlsx"
 
