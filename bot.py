@@ -9915,7 +9915,7 @@ async def _generate_purchases_loaded_report(
             sub = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Subtotal", None)) or Decimal("0")
             exento = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Monto_exento", None)) or Decimal("0")
             base = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Base_imponible", None)) or Decimal("0")
-            iva = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Monto_iva", None)) or Decimal("0")
+            iva = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Monto_IVA", None)) or Decimal("0")
             tot = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Total", None)) or Decimal("0")
             
             count += 1
@@ -10077,7 +10077,7 @@ async def _generate_pending_withholdings_report(
             sub = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Subtotal", None)) or Decimal("0")
             exento = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Monto_exento", None)) or Decimal("0")
             base = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Base_imponible", None)) or Decimal("0")
-            iva = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Monto_iva", None)) or Decimal("0")
+            iva = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Monto_IVA", None)) or Decimal("0")
             tot = excel_store._parse_monto_cell(excel_store._cell(row, headers, "Total", None)) or Decimal("0")
             
             count += 1
