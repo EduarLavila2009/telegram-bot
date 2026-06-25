@@ -2092,7 +2092,8 @@ def _normalize_dir_casing(directory: Path, lowercase_prefix: str, uppercase_pref
 
 async def post_init(application: Application) -> None:
     # 1. Restaurar archivos desde el respaldo de Telegram al iniciar
-    await restore_files_from_backup(application.bot)
+    logger.info("Restauración de archivos desde respaldo deshabilitada temporalmente para preservar datos del servidor.")
+    # await restore_files_from_backup(application.bot)
     # 2. Normalizar la capitalización de nombres de archivos locales
     _normalize_local_file_casing()
     # 3. Iniciar job periódico de monitoreo cada 15 segundos
